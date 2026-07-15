@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#075985">
+  <meta name="description" content="Sistema de gestão do CRAN">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Sistema CRAN</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="styles.css?v=1.0.0">
+</head>
+<body>
+  <div id="loading-screen" class="loading-screen">
+    <div class="brand-mark">CRAN</div>
+    <div class="spinner" aria-label="Carregando"></div>
+  </div>
+
+  <main id="login-view" class="login-view hidden">
+    <section class="login-panel">
+      <div class="login-brand">
+        <div class="brand-mark large">CRAN</div>
+        <div>
+          <h1>Sistema CRAN</h1>
+          <p>Gestão de pacientes, fila de espera e atendimentos</p>
+        </div>
+      </div>
+
+      <form id="login-form" class="stack-form">
+        <label>
+          E-mail
+          <input id="login-email" type="email" autocomplete="username" required>
+        </label>
+        <label>
+          Senha
+          <span class="password-field">
+            <input id="login-password" type="password" autocomplete="current-password" required>
+            <button id="toggle-password" class="icon-button" type="button" aria-label="Mostrar senha">👁</button>
+          </span>
+        </label>
+        <button class="primary-button full" type="submit">Entrar no sistema</button>
+        <button id="forgot-password" class="text-button" type="button">Esqueci minha senha</button>
+      </form>
+      <p id="login-message" class="form-message" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <div id="app-shell" class="app-shell hidden">
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">CRAN</div>
+        <div>
+          <strong>Sistema CRAN</strong>
+          <span>Gestão de atendimentos</span>
+        </div>
+      </div>
+
+      <nav id="main-nav" class="main-nav" aria-label="Menu principal">
+        <button data-page="dashboard" class="nav-item active"><span>▦</span>Painel</button>
+        <button data-page="patients" class="nav-item" data-roles="admin,recepcao,profissional"><span>♙</span>Pacientes</button>
+        <button data-page="queue" class="nav-item" data-roles="admin,recepcao"><span>☷</span>Fila de espera</button>
+        <button data-page="care" class="nav-item" data-roles="admin,recepcao,profissional"><span>♡</span>Em atendimento</button>
+        <button data-page="schedule" class="nav-item" data-roles="admin,recepcao,profissional"><span>▣</span>Agenda</button>
+        <button data-page="professionals" class="nav-item" data-roles="admin,recepcao"><span>♜</span>Profissionais</button>
+        <button data-page="users" class="nav-item" data-roles="admin"><span>⚙</span>Usuários</button>
+        <button data-page="archive" class="nav-item" data-roles="admin,recepcao"><span>▤</span>Arquivo morto</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span id="sidebar-user-name">Usuário</span>
+        <small id="sidebar-user-role">Perfil</small>
+      </div>
+    </aside>
+
+    <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
+    <section class="main-area">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="menu-toggle" class="icon-button mobile-only" aria-label="Abrir menu">☰</button>
+          <div>
+            <h2 id="page-title">Painel</h2>
+            <p id="page-subtitle">Visão geral do sistema</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button id="refresh-button" class="secondary-button" type="button">↻ Atualizar</button>
+          <button id="install-button" class="secondary-button hidden" type="button">Instalar</button>
+          <button id="logout-button" class="danger-ghost-button" type="button">Sair</button>
+        </div>
+      </header>
+
+      <div id="update-banner" class="update-banner hidden">
+        <span>Uma nova versão do sistema está disponível.</span>
+        <button id="apply-update" class="small-button">Atualizar agora</button>
+      </div>
+
+      <section id="page-content" class="page-content" aria-live="polite"></section>
+    </section>
+  </div>
+
+  <dialog id="form-dialog" class="app-dialog">
+    <form id="dynamic-form" method="dialog">
+      <div class="dialog-header">
+        <div>
+          <h3 id="dialog-title">Formulário</h3>
+          <p id="dialog-description"></p>
+        </div>
+        <button id="dialog-close" class="icon-button" value="cancel" type="button" aria-label="Fechar">✕</button>
+      </div>
+      <div id="dialog-body" class="dialog-body"></div>
+      <div class="dialog-actions">
+        <button id="dialog-cancel" class="secondary-button" value="cancel" type="button">Cancelar</button>
+        <button id="dialog-submit" class="primary-button" type="submit">Salvar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <script type="module" src="app.js?v=1.0.0"></script>
+</body>
+</html>

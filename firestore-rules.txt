@@ -1,0 +1,118 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid));
+    }
+
+    function activeUser() {
+      return signedIn()
+        && userDoc().data.ativo == true;
+    }
+
+    function role() {
+      return userDoc().data.perfil;
+    }
+
+    function isAdmin() {
+      return activeUser() && role() == 'admin';
+    }
+
+    function isReception() {
+      return activeUser() && role() == 'recepcao';
+    }
+
+    function isManagement() {
+      return isAdmin() || isReception();
+    }
+
+    function isProfessional() {
+      return activeUser() && role() == 'profissional';
+    }
+
+    function professionalId() {
+      return userDoc().data.profissionalId;
+    }
+
+    match /usuarios/{uid} {
+      allow read: if isAdmin() || (activeUser() && request.auth.uid == uid);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /profissionais/{id} {
+      allow read: if activeUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /pacientes/{id} {
+      allow read: if isManagement()
+        || (isProfessional() && resource.data.profissionalId == professionalId());
+      allow create, update: if isManagement();
+      allow delete: if isAdmin();
+    }
+
+    match /filaEspera/{id} {
+      allow read, create, update: if isManagement();
+      allow delete: if isAdmin();
+    }
+
+    match /atendimentos/{id} {
+      allow read: if isManagement()
+        || (isProfessional() && resource.data.profissionalId == professionalId());
+      allow create, delete: if isManagement();
+      allow update: if isManagement()
+        || (isProfessional()
+          && resource.data.profissionalId == professionalId()
+          && request.resource.data.status in ['ativo', 'alta_solicitada']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status',
+            'observacoesProfissional',
+            'ultimaEvolucao',
+            'atualizadoEm',
+            'atualizadoPor'
+          ]));
+    }
+
+    match /agendamentos/{id} {
+      allow read: if isManagement()
+        || (isProfessional() && resource.data.profissionalId == professionalId());
+      allow create, delete: if isManagement();
+      allow update: if isManagement()
+        || (isProfessional()
+          && resource.data.profissionalId == professionalId()
+          && request.resource.data.status in ['agendado', 'realizado', 'falta', 'cancelado']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status',
+            'observacoes',
+            'atualizadoEm',
+            'atualizadoPor'
+          ]));
+    }
+
+    match /arquivoMorto/{id} {
+      allow read, create, update: if isManagement();
+      allow delete: if isAdmin();
+    }
+
+    match /configuracoes/{id} {
+      allow read: if activeUser();
+      allow write: if isAdmin();
+    }
+
+    match /logs/{id} {
+      allow read: if isAdmin();
+      allow create: if activeUser()
+        && request.resource.data.usuarioUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
