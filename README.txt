@@ -56,7 +56,7 @@ COMO PUBLICAR NO FIREBASE HOSTING
 3. Execute: firebase deploy
 
 ATUALIZAÇÃO AUTOMÁTICA
-A versão atual é 1.1.0 e já está aplicada em:
+A versão atual é 1.2.0 e já está aplicada em:
 - version.json
 - APP_VERSION no app.js
 - CACHE_NAME no sw.js
@@ -67,3 +67,8 @@ SEGURANÇA
 O sistema não usa Firebase Storage.
 O arquivo morto mantém somente dados no Firestore.
 Nunca publique arquivos de conta de serviço, private_key ou credenciais do Firebase Admin SDK.
+
+
+CRÉDITOS
+========
+O sistema exibe a identificação: "Sistema desenvolvido e emprestado por Eliel do Carmo" na tela de acesso e no rodapé interno.
