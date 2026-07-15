@@ -174,19 +174,45 @@ input:focus, select:focus, textarea:focus { border-color: #5aa89f; box-shadow: 0
   justify-content: center;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px;
-  font-size: 10px;
+  gap: 5px;
   line-height: 1.4;
   text-align: center;
 }
-.system-credit strong { font-weight: 850; }
-.login-credit { margin-top: 18px; color: var(--muted); }
-.login-credit strong { color: var(--primary-dark); }
-.sidebar-credit {
-  padding: 0 7px 12px;
-  color: #789ea1;
+.system-credit strong { font-weight: 900; }
+.login-credit {
+  margin-top: 20px;
+  padding: 13px 15px;
+  color: #4e6266;
+  background: linear-gradient(135deg, #fff8e9, #f8ead0);
+  border: 1px solid #e9c98e;
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(128, 83, 22, .10);
+  font-size: 12px;
 }
-.sidebar-credit strong { color: #bfe1dc; }
+.login-credit::before {
+  content: "E";
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  margin-right: 3px;
+  color: #fff;
+  background: #a86516;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 950;
+}
+.login-credit strong { color: #7f4a0d; font-size: 13px; }
+.sidebar-credit {
+  padding: 9px 10px;
+  margin-bottom: 10px;
+  color: #bed5d4;
+  background: rgba(255,255,255,.07);
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 10px;
+  font-size: 9px;
+}
+.sidebar-credit strong { color: #fff; font-size: 10px; }
 
 
 .primary-button, .secondary-button, .danger-ghost-button, .text-button, .small-button, .icon-action {
@@ -294,6 +320,44 @@ button:disabled { cursor: not-allowed; opacity: .58; transform: none !important;
 .icon-action svg { width: 16px; }
 .topbar-avatar { width: 38px; height: 38px; margin-left: 3px; border-radius: 50%; }
 .menu-button svg { width: 22px; }
+.ownership-banner {
+  position: sticky;
+  top: 78px;
+  z-index: 24;
+  min-height: 44px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  color: #dcebea;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255,255,255,.08), transparent 28%),
+    linear-gradient(90deg, #0d343e, #164f59 55%, #0f3c46);
+  border-bottom: 1px solid rgba(255,255,255,.10);
+  box-shadow: 0 6px 18px rgba(12, 48, 57, .12);
+  font-size: 12px;
+  letter-spacing: .01em;
+}
+.ownership-banner strong {
+  color: #ffdca1;
+  font-size: 13px;
+  font-weight: 950;
+  letter-spacing: .025em;
+}
+.ownership-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 27px;
+  height: 27px;
+  color: #173c44;
+  background: #ffdca1;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.35);
+  font-size: 11px;
+  font-weight: 950;
+}
 .update-banner { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 9px 20px; color: #7a4a11; background: var(--warning-soft); border-bottom: 1px solid #eed39b; }
 .page-content { max-width: 1680px; margin: 0 auto; padding: 24px 25px 40px; }
 
@@ -439,6 +503,16 @@ td strong { color: var(--text-strong); }
   .sidebar-overlay { position: fixed; inset: 0; z-index: 35; display: block; pointer-events: none; opacity: 0; background: rgba(8,35,42,.55); transition: opacity .25s; }
   .sidebar-overlay.show { pointer-events: auto; opacity: 1; }
   .topbar { min-height: 70px; padding: 11px 14px; }
+  .ownership-banner {
+    top: 70px;
+    min-height: 42px;
+    padding: 7px 12px;
+    gap: 6px;
+    font-size: 10px;
+    text-align: center;
+  }
+  .ownership-banner strong { font-size: 11px; }
+  .ownership-mark { width: 24px; height: 24px; border-radius: 7px; font-size: 10px; }
   .breadcrumb { font-size: 16px; }
   .breadcrumb span:first-child, .breadcrumb b, .page-heading p, .topbar-date { display: none; }
   .topbar-actions .icon-action { width: 38px; padding: 0; justify-content: center; }
@@ -455,6 +529,8 @@ td strong { color: var(--text-strong); }
 
 @media (max-width: 560px) {
   .login-panel-wrap { place-items: start center; padding-top: 22px; }
+  .ownership-banner { flex-wrap: wrap; line-height: 1.2; }
+  .ownership-text { white-space: nowrap; }
   .login-mobile-brand { margin-bottom: 35px; }
   .login-heading h2 { font-size: 28px; }
   .metric-grid { grid-template-columns: 1fr 1fr; gap: 9px; }

@@ -56,7 +56,7 @@ COMO PUBLICAR NO FIREBASE HOSTING
 3. Execute: firebase deploy
 
 ATUALIZAÇÃO AUTOMÁTICA
-A versão atual é 1.2.1 e já está aplicada em:
+A versão atual é 1.2.2 e já está aplicada em:
 - version.json
 - APP_VERSION no app.js
 - CACHE_NAME no sw.js
@@ -69,7 +69,14 @@ O arquivo morto mantém somente dados no Firestore.
 Nunca publique arquivos de conta de serviço, private_key ou credenciais do Firebase Admin SDK.
 
 
-CORREÇÃO DA INTERFACE — VERSÃO 1.2.1
+CORREÇÃO DA INTERFACE — VERSÃO 1.2.2
 =====================================
 Esta versão restaura integralmente o layout profissional da versão 1.1 e adiciona o crédito sem substituir a estrutura da interface.
 Crédito exibido: Sistema desenvolvido e emprestado por Eliel do Carmo.
+
+
+AVISO VISÍVEL — VERSÃO 1.2.2
+- Faixa fixa logo abaixo do cabeçalho em todas as telas internas.
+- Crédito em alto contraste: Sistema desenvolvido e emprestado por Eliel do Carmo.
+- Destaque maior também na tela de login.
+- Aviso adaptado para computador e celular sem cobrir o conteúdo.

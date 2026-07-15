@@ -23,7 +23,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.2.1";
+const APP_VERSION = "1.2.2";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -1563,7 +1563,7 @@ el.installButton.addEventListener("click", async () => {
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   try {
-    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.2.1");
+    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.2.2");
     if (state.registration.waiting) el.updateBanner.classList.remove("hidden");
     state.registration.addEventListener("updatefound", () => {
       const worker = state.registration.installing;
