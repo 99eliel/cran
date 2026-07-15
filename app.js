@@ -23,7 +23,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -178,6 +178,48 @@ function todayISO() {
 function badge(value = "") {
   const css = normalize(value).replaceAll(" ", "_").replaceAll("-", "_");
   return `<span class="badge ${escapeHTML(css)}">${escapeHTML(value || "—")}</span>`;
+}
+
+function iconSVG(name) {
+  const icons = {
+    users: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M16 11h6"/></svg>`,
+    queue: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3" cy="6" r="1"/><circle cx="3" cy="12" r="1"/><circle cx="3" cy="18" r="1"/></svg>`,
+    heart: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/></svg>`,
+    calendar: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01"/></svg>`,
+    home: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 9-8 9 8"/><path d="M5 10v11h14V10M9 21v-6h6v6"/></svg>`,
+    alert: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.3 3.5 2.4 17.2A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.8L13.7 3.5a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg>`,
+    archive: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M5 6v14h14V6M9 10h6"/><path d="m4 3 1 3h14l1-3z"/></svg>`
+  };
+  return icons[name] || icons.heart;
+}
+
+function userInitials(name = "") {
+  const parts = String(name).trim().split(/\s+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts.at(-1)[0]}` : parts[0]?.slice(0, 2) || "U").toUpperCase();
+}
+
+function greetingText() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Bom dia";
+  if (hour < 18) return "Boa tarde";
+  return "Boa noite";
+}
+
+function welcomeBlock({ professional = false } = {}) {
+  const firstName = (state.profile?.nome || "Usuário").trim().split(/\s+/)[0];
+  return `
+    <section class="dashboard-welcome">
+      <div>
+        <span class="welcome-label">${professional ? "Minha área de atendimento" : "Central de gestão do CRAN"}</span>
+        <h2>${greetingText()}, ${escapeHTML(firstName)}.</h2>
+        <p>${professional ? "Confira seus pacientes vinculados e os próximos horários da agenda." : "Acompanhe a fila, os atendimentos e a equipe em uma visão rápida."}</p>
+      </div>
+      <div class="welcome-actions">
+        ${professional
+          ? `<button class="welcome-action" data-go="care">Meus pacientes</button><button class="welcome-action" data-go="schedule">Ver agenda</button>`
+          : `<button class="welcome-action" data-go="queue">Abrir fila</button><button class="welcome-action" data-go="schedule">Agenda de hoje</button>`}
+      </div>
+    </section>`;
 }
 
 function toast(message, type = "success") {
@@ -367,11 +409,12 @@ async function renderDashboard() {
       .slice(0, 8);
 
     el.pageContent.innerHTML = `
+      ${welcomeBlock({ professional: true })}
       <div class="metric-grid">
-        ${metricCard("Meus pacientes", activeCare.length, "Em acompanhamento")}
-        ${metricCard("Atendimentos hoje", todayAppointments.length, dateToBR(todayISO()))}
-        ${metricCard("Domiciliares", activeCare.filter(item => item.modalidade === "Domiciliar").length, "Pacientes atribuídos")}
-        ${metricCard("Alta solicitada", activeCare.filter(item => item.status === "alta_solicitada").length, "Aguardando recepção")}
+        ${metricCard("Meus pacientes", activeCare.length, "Em acompanhamento", "users", "teal")}
+        ${metricCard("Atendimentos hoje", todayAppointments.length, dateToBR(todayISO()), "calendar", "blue")}
+        ${metricCard("Domiciliares", activeCare.filter(item => item.modalidade === "Domiciliar").length, "Pacientes atribuídos", "home", "orange")}
+        ${metricCard("Alta solicitada", activeCare.filter(item => item.status === "alta_solicitada").length, "Aguardando recepção", "alert", "violet")}
       </div>
       <div class="dashboard-grid">
         <div class="panel">
@@ -403,11 +446,12 @@ async function renderDashboard() {
     .slice(0, 7);
 
   el.pageContent.innerHTML = `
+    ${welcomeBlock()}
     <div class="metric-grid">
-      ${metricCard("Fila de espera", waiting.length, `${urgent.length} urgência(s)`)}
-      ${metricCard("Em atendimento", activeCare.length, "Pacientes vinculados")}
-      ${metricCard("Agenda de hoje", todayAppointments.length, dateToBR(todayISO()))}
-      ${metricCard("Profissionais ativos", professionals.filter(item => item.ativo !== false).length, `${archive.filter(item => item.status === "arquivado").length} no arquivo morto`)}
+      ${metricCard("Fila de espera", waiting.length, `${urgent.length} urgência(s)`, "queue", "orange")}
+      ${metricCard("Em atendimento", activeCare.length, "Pacientes vinculados", "heart", "teal")}
+      ${metricCard("Agenda de hoje", todayAppointments.length, dateToBR(todayISO()), "calendar", "blue")}
+      ${metricCard("Profissionais ativos", professionals.filter(item => item.ativo !== false).length, `${archive.filter(item => item.status === "arquivado").length} no arquivo morto`, "users", "violet")}
     </div>
     <div class="dashboard-grid">
       <div class="panel">
@@ -425,8 +469,15 @@ async function renderDashboard() {
     </div>`;
 }
 
-function metricCard(label, value, note) {
-  return `<article class="metric-card"><div class="metric-label">${escapeHTML(label)}</div><div class="metric-value">${escapeHTML(value)}</div><div class="metric-note">${escapeHTML(note)}</div></article>`;
+function metricCard(label, value, note, icon = "heart", variant = "teal") {
+  return `<article class="metric-card ${escapeHTML(variant)}">
+    <div class="metric-icon">${iconSVG(icon)}</div>
+    <div class="metric-content">
+      <div class="metric-label">${escapeHTML(label)}</div>
+      <div class="metric-value">${escapeHTML(value)}</div>
+      <div class="metric-note">${escapeHTML(note)}</div>
+    </div>
+  </article>`;
 }
 
 function summaryBySpecialty(items) {
@@ -434,8 +485,16 @@ function summaryBySpecialty(items) {
     name,
     count: items.filter(item => item.especialidade === name).length
   }));
-  return `<div class="card-list">${counts.map(item => `
-    <div class="list-card"><div><h4>${escapeHTML(item.name)}</h4><p>Pacientes registrados nesta especialidade</p></div><strong>${item.count}</strong></div>
+  const max = Math.max(1, ...counts.map(item => item.count));
+  return `<div class="specialty-summary">${counts.map(item => `
+    <div class="specialty-row">
+      <div class="specialty-symbol">${escapeHTML(item.name.slice(0, 2).toUpperCase())}</div>
+      <div class="specialty-meta">
+        <strong>${escapeHTML(item.name)}</strong>
+        <small class="specialty-bar"><i style="width:${Math.max(item.count ? 12 : 0, Math.round((item.count / max) * 100))}%"></i></small>
+      </div>
+      <div class="specialty-count">${item.count}</div>
+    </div>
   `).join("")}</div>`;
 }
 
@@ -1469,6 +1528,11 @@ onAuthStateChanged(auth, async user => {
     state.profile = profile;
     el.sidebarUserName.textContent = profile.nome || user.email;
     el.sidebarUserRole.textContent = ROLE_NAMES[profile.perfil] || profile.perfil;
+    const initials = userInitials(profile.nome || user.email);
+    const sidebarAvatar = document.querySelector("#sidebar-user-avatar");
+    const topbarAvatar = document.querySelector("#topbar-user-avatar");
+    if (sidebarAvatar) sidebarAvatar.textContent = initials;
+    if (topbarAvatar) topbarAvatar.textContent = initials;
     configureNavigation();
     el.loginView.classList.add("hidden");
     el.appShell.classList.remove("hidden");
@@ -1499,7 +1563,7 @@ el.installButton.addEventListener("click", async () => {
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   try {
-    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.0.0");
+    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.1.0");
     if (state.registration.waiting) el.updateBanner.classList.remove("hidden");
     state.registration.addEventListener("updatefound", () => {
       const worker = state.registration.installing;
@@ -1538,6 +1602,15 @@ document.querySelector("#apply-update").addEventListener("click", async () => {
 });
 
 navigator.serviceWorker?.addEventListener("controllerchange", () => window.location.reload());
+
+const currentDateElement = document.querySelector("#current-date");
+if (currentDateElement) {
+  currentDateElement.textContent = new Intl.DateTimeFormat("pt-BR", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short"
+  }).format(new Date()).replaceAll(".", "");
+}
 
 registerServiceWorker();
 checkVersion();

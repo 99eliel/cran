@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#075985">
+  <meta name="theme-color" content="#123f4a">
   <meta name="description" content="Sistema de gestão do CRAN">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -11,67 +11,142 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=1.0.0">
+  <link rel="stylesheet" href="styles.css?v=1.1.0">
 </head>
 <body>
   <div id="loading-screen" class="loading-screen">
-    <div class="brand-mark">CRAN</div>
+    <div class="loading-brand">
+      <div class="brand-symbol"><span>+</span></div>
+      <strong>CRAN</strong>
+    </div>
     <div class="spinner" aria-label="Carregando"></div>
+    <small>Preparando o ambiente de atendimento</small>
   </div>
 
   <main id="login-view" class="login-view hidden">
-    <section class="login-panel">
-      <div class="login-brand">
-        <div class="brand-mark large">CRAN</div>
-        <div>
-          <h1>Sistema CRAN</h1>
-          <p>Gestão de pacientes, fila de espera e atendimentos</p>
+    <section class="login-hero" aria-hidden="true">
+      <div class="hero-pattern"></div>
+      <div class="hero-content">
+        <div class="hero-brand">
+          <div class="brand-symbol light"><span>+</span></div>
+          <div>
+            <strong>CRAN</strong>
+            <small>Gestão integrada</small>
+          </div>
+        </div>
+        <div class="hero-copy">
+          <span class="eyebrow light">Cuidado organizado</span>
+          <h1>Informação clara para um atendimento mais humano.</h1>
+          <p>Fila de espera, agenda, profissionais e histórico reunidos em um único ambiente.</p>
+        </div>
+        <div class="hero-modules">
+          <div><span>01</span><strong>Fila inteligente</strong><small>Organização por prioridade</small></div>
+          <div><span>02</span><strong>Agenda integrada</strong><small>Visão por profissional</small></div>
+          <div><span>03</span><strong>Histórico seguro</strong><small>Dados preservados</small></div>
         </div>
       </div>
+    </section>
 
-      <form id="login-form" class="stack-form">
-        <label>
-          E-mail
-          <input id="login-email" type="email" autocomplete="username" required>
-        </label>
-        <label>
-          Senha
-          <span class="password-field">
-            <input id="login-password" type="password" autocomplete="current-password" required>
-            <button id="toggle-password" class="icon-button" type="button" aria-label="Mostrar senha">👁</button>
-          </span>
-        </label>
-        <button class="primary-button full" type="submit">Entrar no sistema</button>
-        <button id="forgot-password" class="text-button" type="button">Esqueci minha senha</button>
-      </form>
-      <p id="login-message" class="form-message" aria-live="polite"></p>
+    <section class="login-panel-wrap">
+      <div class="login-panel">
+        <div class="login-mobile-brand">
+          <div class="brand-symbol"><span>+</span></div>
+          <div><strong>Sistema CRAN</strong><small>Gestão de atendimentos</small></div>
+        </div>
+        <div class="login-heading">
+          <span class="eyebrow">Acesso restrito</span>
+          <h2>Bem-vindo de volta</h2>
+          <p>Entre com seu acesso institucional para continuar.</p>
+        </div>
+
+        <form id="login-form" class="stack-form">
+          <label>
+            <span>E-mail</span>
+            <span class="input-shell">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/></svg>
+              <input id="login-email" type="email" autocomplete="username" placeholder="nome@cran.com" required>
+            </span>
+          </label>
+          <label>
+            <span>Senha</span>
+            <span class="input-shell password-field">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+              <input id="login-password" type="password" autocomplete="current-password" placeholder="Digite sua senha" required>
+              <button id="toggle-password" class="icon-button" type="button" aria-label="Mostrar senha">👁</button>
+            </span>
+          </label>
+          <button class="primary-button full login-button" type="submit">Entrar no sistema <span>→</span></button>
+          <button id="forgot-password" class="text-button" type="button">Esqueci minha senha</button>
+        </form>
+        <p id="login-message" class="form-message" aria-live="polite"></p>
+        <div class="secure-note">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 7v5c0 5 3.4 8.7 8 10 4.6-1.3 8-5 8-10V7z"/><path d="m9 12 2 2 4-4"/></svg>
+          <span>Ambiente protegido por autenticação e controle de permissões.</span>
+        </div>
+      </div>
     </section>
   </main>
 
   <div id="app-shell" class="app-shell hidden">
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-brand">
-        <div class="brand-mark">CRAN</div>
+        <div class="brand-symbol light small"><span>+</span></div>
         <div>
           <strong>Sistema CRAN</strong>
-          <span>Gestão de atendimentos</span>
+          <span>Gestão integrada</span>
         </div>
       </div>
 
+      <div class="nav-section-label">Navegação</div>
       <nav id="main-nav" class="main-nav" aria-label="Menu principal">
-        <button data-page="dashboard" class="nav-item active"><span>▦</span>Painel</button>
-        <button data-page="patients" class="nav-item" data-roles="admin,recepcao,profissional"><span>♙</span>Pacientes</button>
-        <button data-page="queue" class="nav-item" data-roles="admin,recepcao"><span>☷</span>Fila de espera</button>
-        <button data-page="care" class="nav-item" data-roles="admin,recepcao,profissional"><span>♡</span>Em atendimento</button>
-        <button data-page="schedule" class="nav-item" data-roles="admin,recepcao,profissional"><span>▣</span>Agenda</button>
-        <button data-page="professionals" class="nav-item" data-roles="admin,recepcao"><span>♜</span>Profissionais</button>
-        <button data-page="users" class="nav-item" data-roles="admin"><span>⚙</span>Usuários</button>
-        <button data-page="archive" class="nav-item" data-roles="admin,recepcao"><span>▤</span>Arquivo morto</button>
+        <button data-page="dashboard" class="nav-item active">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>
+          <span>Painel</span>
+        </button>
+        <button data-page="patients" class="nav-item" data-roles="admin,recepcao,profissional">
+          <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M3 21v-2a6 6 0 0 1 12 0v2"/><path d="M19 8v6M16 11h6"/></svg>
+          <span>Pacientes</span>
+        </button>
+        <button data-page="queue" class="nav-item" data-roles="admin,recepcao">
+          <svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3" cy="6" r="1"/><circle cx="3" cy="12" r="1"/><circle cx="3" cy="18" r="1"/></svg>
+          <span>Fila de espera</span>
+        </button>
+        <button data-page="care" class="nav-item" data-roles="admin,recepcao,profissional">
+          <svg viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/></svg>
+          <span>Em atendimento</span>
+        </button>
+        <button data-page="schedule" class="nav-item" data-roles="admin,recepcao,profissional">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+          <span>Agenda</span>
+        </button>
+        <button data-page="professionals" class="nav-item" data-roles="admin,recepcao">
+          <svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M16 11h6"/></svg>
+          <span>Profissionais</span>
+        </button>
+        <button data-page="users" class="nav-item" data-roles="admin">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/><path d="M18 4h3M19.5 2.5v3"/></svg>
+          <span>Usuários</span>
+        </button>
+        <button data-page="archive" class="nav-item" data-roles="admin,recepcao">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18M5 6v14h14V6M9 10h6"/><path d="m4 3 1 3h14l1-3z"/></svg>
+          <span>Arquivo morto</span>
+        </button>
       </nav>
 
+      <div class="sidebar-help">
+        <div class="sidebar-help-icon">?</div>
+        <div><strong>Atendimento organizado</strong><small>Dados centralizados e sempre acessíveis.</small></div>
+      </div>
+
       <div class="sidebar-footer">
-        <span id="sidebar-user-name">Usuário</span>
-        <small id="sidebar-user-role">Perfil</small>
+        <div id="sidebar-user-avatar" class="user-avatar">U</div>
+        <div>
+          <span id="sidebar-user-name">Usuário</span>
+          <small id="sidebar-user-role">Perfil</small>
+        </div>
+        <button id="logout-button" class="logout-icon" type="button" aria-label="Sair">
+          <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg>
+        </button>
       </div>
     </aside>
 
@@ -80,16 +155,28 @@
     <section class="main-area">
       <header class="topbar">
         <div class="topbar-left">
-          <button id="menu-toggle" class="icon-button mobile-only" aria-label="Abrir menu">☰</button>
-          <div>
-            <h2 id="page-title">Painel</h2>
+          <button id="menu-toggle" class="icon-button menu-button mobile-only" aria-label="Abrir menu">
+            <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          </button>
+          <div class="page-heading">
+            <div class="breadcrumb"><span>CRAN</span><b>/</b><span id="page-title">Painel</span></div>
             <p id="page-subtitle">Visão geral do sistema</p>
           </div>
         </div>
         <div class="topbar-actions">
-          <button id="refresh-button" class="secondary-button" type="button">↻ Atualizar</button>
-          <button id="install-button" class="secondary-button hidden" type="button">Instalar</button>
-          <button id="logout-button" class="danger-ghost-button" type="button">Sair</button>
+          <div class="topbar-date">
+            <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>
+            <span id="current-date">Hoje</span>
+          </div>
+          <button id="refresh-button" class="icon-action" type="button" title="Atualizar dados">
+            <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+            <span>Atualizar</span>
+          </button>
+          <button id="install-button" class="icon-action hidden" type="button">
+            <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+            <span>Instalar</span>
+          </button>
+          <div id="topbar-user-avatar" class="user-avatar topbar-avatar">U</div>
         </div>
       </header>
 
@@ -106,6 +193,7 @@
     <form id="dynamic-form" method="dialog">
       <div class="dialog-header">
         <div>
+          <span class="eyebrow">Sistema CRAN</span>
           <h3 id="dialog-title">Formulário</h3>
           <p id="dialog-description"></p>
         </div>
@@ -121,6 +209,6 @@
 
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
-  <script type="module" src="app.js?v=1.0.0"></script>
+  <script type="module" src="app.js?v=1.1.0"></script>
 </body>
 </html>
