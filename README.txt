@@ -1,104 +1,79 @@
-SISTEMA CRAN — VERSÃO 1.1
+SISTEMA CRAN — VERSÃO 1.5.0
 Projeto Firebase: cran2026
 
-ESTA VERSÃO
-- Novo layout institucional e menos genérico.
-- Tela de login dividida e responsiva.
-- Identidade visual própria do CRAN.
-- Menu lateral redesenhado com ícones.
-- Painel com saudação, atalhos e indicadores visuais.
-- Cards, tabelas, filtros e formulários reorganizados.
-- Melhor adaptação para celular e computador.
-- Todas as funções da versão anterior foram mantidas.
+PRINCIPAIS MÓDULOS
+- Login e perfis de acesso.
+- Pacientes e fila de espera.
+- Encaminhamento para profissionais.
+- Pacientes em atendimento.
+- Agenda diária, semanal e mensal.
+- Relatórios com filtros e exportação.
+- Profissionais e usuários.
+- Arquivo morto com restauração de pacientes.
+- PWA instalável e atualização automática.
 
-ARQUIVOS DO PACOTE
-- index.html: interface principal.
-- styles.css: design responsivo.
-- app.js: login, pacientes, fila, profissionais, atendimentos, agenda e arquivo morto.
-- firebase-config.js: conexão com o projeto cran2026.
-- firestore.rules: regras para publicar pela Firebase CLI.
-- firestore-rules.txt: cópia das regras para colar manualmente no Console Firebase.
-- firebase.json: configuração do Firestore e Firebase Hosting.
-- .firebaserc: conexão do diretório com o projeto cran2026.
-- manifest.webmanifest, sw.js e ícones: instalação como aplicativo e atualização automática.
-- version.json: versão publicada.
+NOVIDADES DA VERSÃO 1.5.0 — MIGRAÇÃO DO ARQUIVO MORTO
+- Importação privada do cadastro histórico em JSON.
+- Importação disponível somente para o administrador.
+- Verificação automática para impedir registros duplicados ao repetir a importação.
+- Processamento em lotes para respeitar os limites do Firestore.
+- Progresso visual durante toda a importação.
+- Busca por nome, número do prontuário, condição, atendimento e telefone.
+- Filtros por origem e especialidade.
+- Paginação de 100 registros por tela.
+- Exportação do arquivo morto em CSV.
+- Preservação do texto original do documento antigo.
+- Terapia Ocupacional, Equoterapia e Grupo permanecem como categorias históricas.
+- Ao restaurar um prontuário antigo, o paciente volta com “Cadastro incompleto” e deve ser atualizado antes de entrar na fila.
+
+IMPORTANTE SOBRE OS DADOS HISTÓRICOS
+O arquivo arquivo-morto-cran.json é confidencial e contém dados pessoais e informações de saúde.
+NÃO coloque esse JSON no GitHub.
+NÃO coloque esse JSON dentro da pasta publicada pelo Firebase Hosting.
+Guarde o pacote de migração em uma pasta privada no computador.
+
+COMO IMPORTAR
+1. Atualize o sistema com os arquivos desta versão.
+2. Teste pelo Live Server no VS Code.
+3. Entre no sistema usando o administrador.
+4. Abra “Arquivo morto”.
+5. Clique em “Importar histórico”.
+6. Selecione o arquivo arquivo-morto-cran.json do pacote privado de migração.
+7. Confira a quantidade mostrada na prévia.
+8. Clique em “Iniciar importação”.
+9. Mantenha a página aberta até aparecer a mensagem de conclusão.
+
+A importação pode ser repetida com segurança. Os identificadores são determinísticos e os registros já existentes serão ignorados.
 
 PARA TESTAR NO VS CODE
-1. Extraia todos os arquivos na pasta do sistema.
+1. Extraia todos os arquivos do sistema na mesma pasta.
 2. Abra a pasta inteira no VS Code.
 3. Instale a extensão Live Server.
 4. Clique com o botão direito no index.html.
 5. Escolha Open with Live Server.
-6. Acesse pelo endereço localhost exibido pelo Live Server.
+6. Acesse pelo endereço localhost exibido.
 
-IMPORTANTE
 O teste local usa o Authentication e o Firestore reais do projeto cran2026.
 Não é necessário subir no GitHub para testar.
 
-PARA ATUALIZAR A VERSÃO ANTERIOR
-Substitua todos os arquivos antigos pelos arquivos deste pacote.
-As coleções e os dados do Firestore não serão apagados.
-As regras desta versão são compatíveis com a versão anterior.
-
-ANTES DE ENTRAR
-1. O login por E-mail/senha deve estar ativado no Firebase Authentication.
-2. O administrador inicial deve existir em usuarios/UID_DO_USUARIO.
-3. O documento precisa conter:
-   nome: texto
-   email: texto
-   perfil: "admin"
-   ativo: true
-4. As regras do arquivo firestore-rules.txt devem estar publicadas.
-
-COMO PUBLICAR NO FIREBASE HOSTING
+PARA PUBLICAR NO FIREBASE HOSTING
 1. Abra o terminal dentro da pasta.
 2. Execute: firebase login
 3. Execute: firebase deploy
 
-ATUALIZAÇÃO AUTOMÁTICA
-A versão atual é 1.2.2 e já está aplicada em:
-- version.json
-- APP_VERSION no app.js
-- CACHE_NAME no sw.js
-- index.html
-- APP_SHELL no sw.js
+ARQUIVOS DO SISTEMA
+- index.html: interface principal.
+- styles.css: design responsivo.
+- app.js: regras e funções do sistema.
+- firebase-config.js: conexão com o projeto cran2026.
+- firestore.rules: regras do Firestore.
+- firestore-rules.txt: cópia das regras para colar no console.
+- firebase.json e .firebaserc: configuração de publicação.
+- manifest.webmanifest, sw.js e ícones: PWA e atualização automática.
+- version.json: versão publicada.
 
 SEGURANÇA
-O sistema não usa Firebase Storage.
-O arquivo morto mantém somente dados no Firestore.
-Nunca publique arquivos de conta de serviço, private_key ou credenciais do Firebase Admin SDK.
-
-
-CORREÇÃO DA INTERFACE — VERSÃO 1.2.2
-=====================================
-Esta versão restaura integralmente o layout profissional da versão 1.1 e adiciona o crédito sem substituir a estrutura da interface.
-Crédito exibido: Sistema desenvolvido e emprestado por Eliel do Carmo.
-
-
-AVISO VISÍVEL — VERSÃO 1.2.2
-- Faixa fixa logo abaixo do cabeçalho em todas as telas internas.
-- Crédito em alto contraste: Sistema desenvolvido e emprestado por Eliel do Carmo.
-- Destaque maior também na tela de login.
-- Aviso adaptado para computador e celular sem cobrir o conteúdo.
-
-
-NOVIDADES DA VERSÃO 1.3.0 — RELATÓRIOS
---------------------------------------
-- Nova aba Relatórios para administrador e recepção.
-- 13 modelos: resumo gerencial, fila atual, tempo de espera, histórico da fila, pacientes ativos, atendimentos, agenda, produtividade, faltas/cancelamentos, altas, domiciliares, especialidades e carteira por profissional.
-- Filtros por período, especialidade, profissional, classificação, status, modalidade e busca textual.
-- Atalhos de período: este mês, mês anterior, este ano e todo período.
-- Exportação CSV compatível com Excel.
-- Impressão e opção de salvar em PDF pelo navegador.
-- Não exige novas coleções nem alteração das regras do Firestore.
-
-
-NOVIDADES DA VERSÃO 1.4.0 — AGENDA REORGANIZADA
-- Visualização diária, semanal e lista mensal.
-- Navegação rápida entre dias, semanas e meses.
-- Filtros separados por profissional, especialidade, situação e busca.
-- Indicadores de agendados, realizados, faltas e cancelados.
-- Novo agendamento em etapas: profissional, paciente, data e horário.
-- Edição e remarcação de horários.
-- Cancelamento com motivo obrigatório e preservação no histórico.
-- Interface adaptada para celular e computador.
+- O sistema não utiliza Firebase Storage.
+- O arquivo morto armazena somente dados no Firestore.
+- Nunca publique conta de serviço, private_key ou credenciais do Firebase Admin SDK.
+- O arquivo de migração não faz parte do ZIP do sistema e deve continuar privado.

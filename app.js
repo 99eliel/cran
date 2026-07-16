@@ -23,7 +23,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -518,7 +518,7 @@ async function renderPatients() {
   el.pageContent.innerHTML = `
     <div class="page-toolbar">
       <div class="filters">
-        <input id="patient-search" type="search" placeholder="Buscar nome, CPF ou telefone">
+        <input id="patient-search" type="search" placeholder="Buscar nome, CPF, prontuário ou telefone">
         <select id="patient-specialty-filter"><option value="">Todas as especialidades</option>${specialtyOptions()}</select>
       </div>
       ${canManage() ? `<button class="primary-button" data-action="new-patient">+ Novo paciente</button>` : ""}
@@ -529,7 +529,7 @@ async function renderPatients() {
     const term = normalize(document.querySelector("#patient-search").value);
     const specialty = document.querySelector("#patient-specialty-filter").value;
     const filtered = patients.filter(item => {
-      const haystack = normalize(`${item.nome} ${item.cpf} ${item.telefone}`);
+      const haystack = normalize(`${item.nome} ${item.cpf} ${item.numeroProntuario || ""} ${item.telefone} ${item.patologia || ""}`);
       return (!term || haystack.includes(term)) && (!specialty || item.especialidade === specialty);
     });
     document.querySelector("#patients-panel").innerHTML = patientsTable(filtered);
@@ -544,15 +544,15 @@ function patientsTable(items) {
     <thead><tr><th>Paciente</th><th>Contato</th><th>Especialidade</th><th>Classificação</th><th>Situação</th><th>Ações</th></tr></thead>
     <tbody>${items.sort((a,b) => String(a.nome).localeCompare(String(b.nome))).map(item => `
       <tr>
-        <td><strong>${escapeHTML(item.nome)}</strong><br><small>${escapeHTML(formatCPF(item.cpf))} · Nasc. ${escapeHTML(dateToBR(item.dataNascimento))}</small></td>
+        <td><strong>${escapeHTML(item.nome)}</strong><br><small>${item.numeroProntuario ? `Prontuário ${escapeHTML(item.numeroProntuario)} · ` : ""}${item.cpf ? escapeHTML(formatCPF(item.cpf)) : "CPF pendente"}${item.dataNascimento ? ` · Nasc. ${escapeHTML(dateToBR(item.dataNascimento))}` : ""}</small></td>
         <td>${escapeHTML(formatPhone(item.telefone))}</td>
         <td>${escapeHTML(item.especialidade || "—")}<br><small>${escapeHTML(item.tipoAtendimento || "")}</small></td>
         <td>${badge(item.classificacao)}</td>
-        <td>${badge(item.status === "em_atendimento" ? "Em atendimento" : "Ativo")}</td>
+        <td>${badge(item.cadastroIncompleto ? "Cadastro incompleto" : item.status === "em_atendimento" ? "Em atendimento" : "Ativo")}</td>
         <td><div class="actions-cell">
           <button class="table-button" data-action="view-patient" data-id="${item.id}">Ver</button>
-          ${canManage() ? `<button class="table-button" data-action="edit-patient" data-id="${item.id}">Editar</button>` : ""}
-          ${canManage() && item.status !== "em_atendimento" ? `<button class="table-button primary" data-action="add-queue" data-id="${item.id}">Colocar na fila</button>` : ""}
+          ${canManage() ? `<button class="table-button ${item.cadastroIncompleto ? "primary" : ""}" data-action="edit-patient" data-id="${item.id}">${item.cadastroIncompleto ? "Completar cadastro" : "Editar"}</button>` : ""}
+          ${canManage() && !item.cadastroIncompleto && item.status !== "em_atendimento" ? `<button class="table-button primary" data-action="add-queue" data-id="${item.id}">Colocar na fila</button>` : ""}
         </div></td>
       </tr>`).join("")}</tbody>
   </table></div>`;
@@ -597,6 +597,7 @@ function openPatientDialog(patient = null) {
         modalidade: formValue(formData, "modalidade"),
         endereco: formValue(formData, "endereco"),
         observacoes: formValue(formData, "observacoes"),
+        cadastroIncompleto: false,
         atualizadoEm: serverTimestamp(),
         atualizadoPor: state.user.uid
       };
@@ -963,7 +964,16 @@ async function openArchiveDialog(item) {
       batch.set(archiveRef, {
         pacienteId: patient.id,
         pacienteNome: patient.nome,
+        pacienteNomeBusca: normalize(patient.nome),
         dadosPaciente: patient,
+        numeroProntuario: patient.numeroProntuario || "",
+        patologia: patient.patologia || "",
+        tipoAtendimentoOriginal: item.tipoAtendimento || patient.tipoAtendimento || "",
+        especialidades: [item.especialidade].filter(Boolean),
+        telefone: patient.telefone || "",
+        telefones: patient.telefones || (patient.telefone ? [patient.telefone] : []),
+        origem: "sistema",
+        registroLegado: false,
         atendimentoId: item.id,
         profissionalId: item.profissionalId,
         profissionalNome: item.profissionalNome,
@@ -1000,6 +1010,7 @@ async function openArchiveDialog(item) {
         });
       });
       await batch.commit();
+      delete state.caches.archiveAll;
       await logAction("arquivar", "arquivoMorto", archiveRef.id, { pacienteNome: patient.nome });
       toast("Paciente enviado ao arquivo morto.");
       await renderCare();
@@ -2370,57 +2381,424 @@ async function resetUser(item) {
 }
 
 async function renderArchive() {
-  const archive = await readCollection("arquivoMorto");
+  const archive = state.caches.archiveAll || await readCollection("arquivoMorto");
+  state.caches.archiveAll = archive;
   const activeArchive = archive.filter(item => item.status === "arquivado");
   state.caches.archive = activeArchive;
+
+  const specialties = [...new Set(activeArchive.flatMap(item => archiveSpecialties(item)).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "pt-BR"));
+  const legacyCount = activeArchive.filter(archiveIsLegacy).length;
+  const systemCount = activeArchive.length - legacyCount;
+  const withPhone = activeArchive.filter(item => archivePhone(item)).length;
+
   el.pageContent.innerHTML = `
-    <div class="page-toolbar"><div class="filters"><input id="archive-search" type="search" placeholder="Buscar paciente"><select id="archive-specialty-filter"><option value="">Todas as especialidades</option>${specialtyOptions()}</select></div></div>
-    <div class="panel" id="archive-panel">${archiveTable(activeArchive)}</div>`;
-  const apply = () => {
+    <div class="metric-grid archive-metric-grid">
+      ${metricCard("Total arquivado", activeArchive.length, "Registros preservados", "archive", "teal")}
+      ${metricCard("Histórico importado", legacyCount, "Cadastro anterior do CRAN", "users", "blue")}
+      ${metricCard("Altas do sistema", systemCount, "Concluídos pelo sistema", "heart", "violet")}
+      ${metricCard("Com telefone", withPhone, "Contatos disponíveis", "alert", "orange")}
+    </div>
+    <div class="page-toolbar archive-toolbar">
+      <div class="filters archive-filters">
+        <input id="archive-search" type="search" placeholder="Buscar nome, prontuário, condição ou telefone">
+        <select id="archive-origin-filter">
+          <option value="">Todas as origens</option>
+          <option value="legado">Histórico importado</option>
+          <option value="sistema">Altas do sistema</option>
+        </select>
+        <select id="archive-specialty-filter">
+          <option value="">Todas as especialidades</option>
+          ${specialties.map(name => `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="toolbar-actions">
+        <button class="secondary-button" type="button" data-action="export-archive">Exportar CSV</button>
+        ${isAdmin() ? `<button class="primary-button" type="button" data-action="import-archive">Importar histórico</button>` : ""}
+      </div>
+    </div>
+    <div class="panel archive-panel" id="archive-panel"></div>`;
+
+  let currentPage = 1;
+  const pageSize = 100;
+  const panel = document.querySelector("#archive-panel");
+
+  const apply = (resetPage = true) => {
+    if (resetPage) currentPage = 1;
     const term = normalize(document.querySelector("#archive-search").value);
     const specialty = document.querySelector("#archive-specialty-filter").value;
-    const filtered = activeArchive.filter(item => (!term || normalize(item.pacienteNome).includes(term)) && (!specialty || item.especialidade === specialty));
-    document.querySelector("#archive-panel").innerHTML = archiveTable(filtered);
+    const origin = document.querySelector("#archive-origin-filter").value;
+    const filtered = activeArchive.filter(item => {
+      const matchesTerm = !term || archiveSearchText(item).includes(term);
+      const matchesSpecialty = !specialty || archiveSpecialties(item).includes(specialty);
+      const itemOrigin = archiveIsLegacy(item) ? "legado" : "sistema";
+      return matchesTerm && matchesSpecialty && (!origin || origin === itemOrigin);
+    });
+    state.caches.archiveFiltered = filtered;
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    currentPage = Math.min(currentPage, totalPages);
+    panel.innerHTML = archiveTable(filtered, currentPage, pageSize);
   };
-  document.querySelector("#archive-search").addEventListener("input", apply);
-  document.querySelector("#archive-specialty-filter").addEventListener("change", apply);
+
+  document.querySelector("#archive-search").addEventListener("input", () => apply(true));
+  document.querySelector("#archive-specialty-filter").addEventListener("change", () => apply(true));
+  document.querySelector("#archive-origin-filter").addEventListener("change", () => apply(true));
+  panel.addEventListener("click", event => {
+    const pageButton = event.target.closest("[data-archive-page]");
+    if (!pageButton) return;
+    currentPage = Number(pageButton.dataset.archivePage || 1);
+    apply(false);
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  apply(true);
 }
 
-function archiveTable(items) {
-  if (!items.length) return emptyHTML("Arquivo morto vazio", "Pacientes concluídos aparecerão nesta área.");
-  return `<div class="table-wrap"><table><thead><tr><th>Paciente</th><th>Especialidade</th><th>Profissional</th><th>Conclusão</th><th>Motivo</th><th>Ações</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${escapeHTML(item.pacienteNome)}</strong></td><td>${escapeHTML(item.especialidade)}</td><td>${escapeHTML(item.profissionalNome || "—")}</td><td>${escapeHTML(dateToBR(item.dataConclusao))}</td><td>${escapeHTML(item.motivo || "—")}</td><td><div class="actions-cell"><button class="table-button" data-action="archive-details" data-id="${item.id}">Ver</button><button class="table-button primary" data-action="restore-patient" data-id="${item.id}">Restaurar</button></div></td></tr>`).join("")}</tbody></table></div>`;
+function archiveIsLegacy(item) {
+  return item?.registroLegado === true || item?.origem === "legado_docx";
+}
+
+function archiveValue(item, key) {
+  return item?.[key] ?? item?.dadosPaciente?.[key] ?? "";
+}
+
+function archiveSpecialties(item) {
+  const values = item?.especialidades?.length
+    ? item.especialidades
+    : item?.dadosPaciente?.especialidades?.length
+      ? item.dadosPaciente.especialidades
+      : [item?.especialidade || item?.dadosPaciente?.especialidade].filter(Boolean);
+  return [...new Set(values.filter(Boolean))];
+}
+
+function archivePhone(item) {
+  const phones = item?.telefones?.length
+    ? item.telefones
+    : item?.dadosPaciente?.telefones?.length
+      ? item.dadosPaciente.telefones
+      : [archiveValue(item, "telefone")].filter(Boolean);
+  return phones.filter(Boolean).join(" · ");
+}
+
+function archiveSearchText(item) {
+  return normalize([
+    item?.pacienteNome,
+    archiveValue(item, "numeroProntuario"),
+    archiveValue(item, "patologia"),
+    archiveValue(item, "tipoAtendimentoOriginal"),
+    archivePhone(item),
+    item?.profissionalNome,
+    archiveSpecialties(item).join(" ")
+  ].filter(Boolean).join(" "));
+}
+
+function archiveOriginLabel(item) {
+  if (archiveIsLegacy(item)) return "Histórico importado";
+  return "Alta do sistema";
+}
+
+function archiveTable(items, page = 1, pageSize = 100) {
+  if (!items.length) return emptyHTML("Nenhum registro encontrado", "Altere os filtros ou importe o arquivo histórico.");
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * pageSize;
+  const pageItems = items.slice(start, start + pageSize);
+
+  return `<div class="archive-result-heading">
+      <div><strong>${items.length.toLocaleString("pt-BR")} registros</strong><span>Exibindo ${start + 1}–${Math.min(start + pageSize, items.length)}</span></div>
+      <small>Página ${safePage} de ${totalPages}</small>
+    </div>
+    <div class="table-wrap"><table class="archive-table"><thead><tr>
+      <th>Prontuário</th><th>Paciente</th><th>Condição / atendimento</th><th>Especialidade</th><th>Telefone</th><th>Origem</th><th>Ações</th>
+    </tr></thead><tbody>${pageItems.map(item => {
+      const number = archiveValue(item, "numeroProntuario") || "—";
+      const pathology = archiveValue(item, "patologia") || "Condição não informada";
+      const attendance = archiveValue(item, "tipoAtendimentoOriginal");
+      const specialties = archiveSpecialties(item);
+      const phone = archivePhone(item) || "—";
+      const originDetail = archiveIsLegacy(item)
+        ? "Cadastro histórico"
+        : `${dateToBR(item.dataConclusao) || "Sem data"}${item.motivo ? ` · ${item.motivo}` : ""}`;
+      return `<tr>
+        <td><strong class="record-number">${escapeHTML(number)}</strong></td>
+        <td><strong>${escapeHTML(item.pacienteNome || archiveValue(item, "nome") || "Sem nome")}</strong>${item.profissionalNome ? `<small>${escapeHTML(item.profissionalNome)}</small>` : ""}</td>
+        <td><strong>${escapeHTML(pathology)}</strong>${attendance ? `<small>${escapeHTML(attendance)}</small>` : ""}</td>
+        <td><div class="archive-tags">${specialties.length ? specialties.map(name => `<span>${escapeHTML(name)}</span>`).join("") : `<span>Não identificado</span>`}</div></td>
+        <td>${escapeHTML(phone)}</td>
+        <td><strong>${escapeHTML(archiveOriginLabel(item))}</strong><small>${escapeHTML(originDetail)}</small></td>
+        <td><div class="actions-cell"><button class="table-button" data-action="archive-details" data-id="${item.id}">Ver</button><button class="table-button primary" data-action="restore-patient" data-id="${item.id}">Restaurar</button></div></td>
+      </tr>`;
+    }).join("")}</tbody></table></div>
+    ${totalPages > 1 ? `<div class="archive-pagination">
+      <button class="secondary-button" type="button" data-archive-page="${Math.max(1, safePage - 1)}" ${safePage === 1 ? "disabled" : ""}>← Anterior</button>
+      <span>${safePage} / ${totalPages}</span>
+      <button class="secondary-button" type="button" data-archive-page="${Math.min(totalPages, safePage + 1)}" ${safePage === totalPages ? "disabled" : ""}>Próxima →</button>
+    </div>` : ""}`;
 }
 
 function archiveDetails(item) {
+  if (!item) return;
+  const number = archiveValue(item, "numeroProntuario") || "—";
+  const pathology = archiveValue(item, "patologia") || "Não informada";
+  const attendance = archiveValue(item, "tipoAtendimentoOriginal") || "Não informado";
+  const phone = archivePhone(item) || "Não informado";
+  const specialties = archiveSpecialties(item);
+  const legacyInfo = archiveIsLegacy(item) ? `
+    <div class="detail-grid archive-detail-grid">
+      <div><span>Prontuário</span><strong>${escapeHTML(number)}</strong></div>
+      <div><span>Origem</span><strong>Cadastro histórico importado</strong></div>
+      <div class="span-2"><span>Patologia / condição</span><strong>${escapeHTML(pathology)}</strong></div>
+      <div class="span-2"><span>Tipo de atendimento original</span><strong>${escapeHTML(attendance)}</strong></div>
+      <div class="span-2"><span>Especialidades identificadas</span><strong>${escapeHTML(specialties.join(" · ") || "Não identificada")}</strong></div>
+      <div class="span-2"><span>Telefone(s)</span><strong>${escapeHTML(phone)}</strong></div>
+    </div>
+    <div class="info-box">Registro migrado do documento histórico de prontuários. O texto original foi preservado nos dados do registro.</div>` : `
+    <div class="detail-grid archive-detail-grid">
+      <div><span>Data de conclusão</span><strong>${escapeHTML(dateToBR(item.dataConclusao) || "Não informada")}</strong></div>
+      <div><span>Motivo</span><strong>${escapeHTML(item.motivo || "Não informado")}</strong></div>
+      <div class="span-2"><span>Profissional</span><strong>${escapeHTML(item.profissionalNome || "Não informado")}</strong></div>
+      <div class="span-2"><span>Observações finais</span><strong>${escapeHTML(item.observacoesFinais || "Sem observações finais")}</strong></div>
+    </div>`;
+
   openDialog({
-    title: item.pacienteNome,
-    description: "Registro do arquivo morto",
+    title: item.pacienteNome || archiveValue(item, "nome") || "Registro histórico",
+    description: archiveOriginLabel(item),
     submitLabel: "Fechar",
-    body: `<div class="card-list"><div class="list-card"><div><h4>Conclusão</h4><p>${escapeHTML(dateToBR(item.dataConclusao))} · ${escapeHTML(item.motivo)}</p><p>Profissional: ${escapeHTML(item.profissionalNome || "—")}</p></div></div><div class="info-box">${escapeHTML(item.observacoesFinais || "Sem observações finais.")}</div><div class="list-card"><div><h4>Arquivado em</h4><p>${escapeHTML(formatTimestamp(item.arquivadoEm))}</p></div></div></div>`,
+    body: legacyInfo,
     onSubmit: async () => {}
   });
 }
 
+function validateArchivePayload(payload) {
+  if (!payload || payload.schemaVersion !== 1 || !Array.isArray(payload.records)) {
+    throw new Error("O arquivo selecionado não possui o formato de migração do Sistema CRAN.");
+  }
+  const invalid = payload.records.find(item => !item.legacyId || !item.nome || !item.numeroProntuario);
+  if (invalid) throw new Error("O arquivo contém registros incompletos e precisa ser gerado novamente.");
+  return payload;
+}
+
+async function openArchiveImportDialog() {
+  if (!isAdmin()) throw new Error("Somente o administrador pode importar o arquivo histórico.");
+  let selectedPayload = null;
+  openDialog({
+    title: "Importar arquivo morto histórico",
+    description: "Importação privada e controlada",
+    submitLabel: "Iniciar importação",
+    body: `<div class="archive-import-layout">
+      <div class="archive-import-warning">
+        <strong>Arquivo confidencial</strong>
+        <p>Selecione somente o JSON preparado para o CRAN. Não envie esse arquivo ao GitHub nem coloque na pasta pública do Hosting.</p>
+      </div>
+      <label class="file-drop-field">
+        <span>Arquivo de migração (.json)</span>
+        <input id="archive-import-file" name="archiveImportFile" type="file" accept="application/json,.json" required>
+        <small>O conteúdo será lido localmente e enviado ao Firestore somente após sua confirmação.</small>
+      </label>
+      <div id="archive-import-preview" class="archive-import-preview muted-box">Selecione o arquivo para conferir a quantidade de registros.</div>
+      <div id="archive-import-progress" class="archive-import-progress hidden">
+        <div><strong id="archive-import-progress-label">Preparando...</strong><span id="archive-import-progress-value">0%</span></div>
+        <progress id="archive-import-progress-bar" value="0" max="100"></progress>
+        <small id="archive-import-progress-detail">Não feche esta janela durante a importação.</small>
+      </div>
+    </div>`,
+    afterOpen: () => {
+      const input = document.querySelector("#archive-import-file");
+      const preview = document.querySelector("#archive-import-preview");
+      input.addEventListener("change", async () => {
+        selectedPayload = null;
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+          const payload = validateArchivePayload(JSON.parse(await file.text()));
+          selectedPayload = payload;
+          const summary = payload.summary || {};
+          preview.className = "archive-import-preview";
+          preview.innerHTML = `<strong>${payload.records.length.toLocaleString("pt-BR")} registros prontos</strong>
+            <span>${Number(summary.recordsExcluded || 0).toLocaleString("pt-BR")} registros separados para revisão · ${Number(summary.duplicateProntuarioNumbers || 0).toLocaleString("pt-BR")} números duplicados preservados</span>`;
+        } catch (error) {
+          preview.className = "archive-import-preview error-box";
+          preview.textContent = error.message;
+        }
+      });
+    },
+    onSubmit: async formData => {
+      const file = formData.get("archiveImportFile");
+      if (!selectedPayload && file instanceof File) {
+        selectedPayload = validateArchivePayload(JSON.parse(await file.text()));
+      }
+      if (!selectedPayload) throw new Error("Selecione um arquivo de migração válido.");
+
+      const progress = document.querySelector("#archive-import-progress");
+      const progressBar = document.querySelector("#archive-import-progress-bar");
+      const progressLabel = document.querySelector("#archive-import-progress-label");
+      const progressValue = document.querySelector("#archive-import-progress-value");
+      const progressDetail = document.querySelector("#archive-import-progress-detail");
+      progress.classList.remove("hidden");
+
+      progressLabel.textContent = "Verificando registros existentes...";
+      const existingArchive = state.caches.archiveAll || await readCollection("arquivoMorto");
+      const existingIds = new Set(existingArchive.map(item => item.id));
+      const pending = selectedPayload.records.filter(item => !existingIds.has(item.legacyId));
+      if (!pending.length) {
+        progressBar.value = 100;
+        progressValue.textContent = "100%";
+        progressLabel.textContent = "Arquivo já importado";
+        progressDetail.textContent = "Nenhum registro novo foi encontrado.";
+        toast("Todos os registros desse arquivo já estão no sistema.");
+        return;
+      }
+
+      const batchSize = 400;
+      let imported = 0;
+      for (let offset = 0; offset < pending.length; offset += batchSize) {
+        const chunk = pending.slice(offset, offset + batchSize);
+        const batch = writeBatch(db);
+        chunk.forEach(record => {
+          const patientData = {
+            nome: record.nome,
+            nomeOriginal: record.nomeOriginal || record.nome,
+            numeroProntuario: record.numeroProntuario,
+            numeroProntuarioOriginal: record.numeroProntuarioOriginal || record.numeroProntuario,
+            patologia: record.patologia || "",
+            patologiaOriginal: record.patologiaOriginal || record.patologia || "",
+            tipoAtendimentoOriginal: record.tipoAtendimentoOriginal || "",
+            especialidade: record.especialidade || "Não identificado",
+            especialidades: record.especialidades || [],
+            telefone: record.telefone || "",
+            telefones: record.telefones || [],
+            telefoneOriginal: record.telefoneOriginal || "",
+            observacoes: `Registro histórico importado do cadastro anterior do CRAN.${record.patologia ? ` Condição: ${record.patologia}.` : ""}${record.tipoAtendimentoOriginal ? ` Atendimento original: ${record.tipoAtendimentoOriginal}.` : ""}`,
+            origem: "legado_docx",
+            registroLegado: true,
+            legadoId: record.legacyId,
+            sourceRow: record.sourceRow || null
+          };
+          batch.set(doc(db, "arquivoMorto", record.legacyId), {
+            pacienteId: record.legacyId,
+            pacienteNome: record.nome,
+            pacienteNomeBusca: normalize(record.nome),
+            dadosPaciente: patientData,
+            numeroProntuario: record.numeroProntuario,
+            patologia: record.patologia || "",
+            tipoAtendimentoOriginal: record.tipoAtendimentoOriginal || "",
+            especialidade: record.especialidade || "Não identificado",
+            especialidades: record.especialidades || [],
+            telefone: record.telefone || "",
+            telefones: record.telefones || [],
+            motivo: "Cadastro histórico",
+            observacoesFinais: "Importado do arquivo morto existente do CRAN.",
+            status: "arquivado",
+            origem: "legado_docx",
+            registroLegado: true,
+            datasetId: selectedPayload.datasetId || "cran-arquivo-morto",
+            sourceRow: record.sourceRow || null,
+            importadoEm: serverTimestamp(),
+            importadoPor: state.user.uid,
+            arquivadoEm: serverTimestamp(),
+            arquivadoPor: state.user.uid
+          });
+        });
+        await batch.commit();
+        imported += chunk.length;
+        const percent = Math.round((imported / pending.length) * 100);
+        progressBar.value = percent;
+        progressValue.textContent = `${percent}%`;
+        progressLabel.textContent = `Importando ${imported.toLocaleString("pt-BR")} de ${pending.length.toLocaleString("pt-BR")}`;
+        progressDetail.textContent = `Lote ${Math.ceil(imported / batchSize)} de ${Math.ceil(pending.length / batchSize)} concluído.`;
+      }
+
+      delete state.caches.archiveAll;
+      await logAction("importar_arquivo_morto", "arquivoMorto", selectedPayload.datasetId || "legado", {
+        registrosImportados: imported,
+        registrosIgnorados: selectedPayload.records.length - pending.length,
+        arquivoFonte: selectedPayload.source?.fileName || "arquivo histórico"
+      });
+      progressLabel.textContent = "Importação concluída";
+      progressDetail.textContent = `${imported.toLocaleString("pt-BR")} registros foram adicionados com segurança.`;
+      toast(`${imported.toLocaleString("pt-BR")} registros históricos importados.`);
+      await renderArchive();
+    }
+  });
+}
+
+function exportArchiveCSV() {
+  const items = state.caches.archiveFiltered || state.caches.archive || [];
+  if (!items.length) return toast("Não há registros para exportar.", "error");
+  const escapeCSV = value => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const rows = [
+    ["Prontuário", "Paciente", "Patologia/condição", "Tipo de atendimento original", "Especialidades", "Telefone(s)", "Origem", "Data de conclusão", "Motivo"],
+    ...items.map(item => [
+      archiveValue(item, "numeroProntuario"),
+      item.pacienteNome || archiveValue(item, "nome"),
+      archiveValue(item, "patologia"),
+      archiveValue(item, "tipoAtendimentoOriginal"),
+      archiveSpecialties(item).join(" | "),
+      archivePhone(item),
+      archiveOriginLabel(item),
+      dateToBR(item.dataConclusao),
+      item.motivo || ""
+    ])
+  ];
+  const content = rows.map(row => row.map(escapeCSV).join(";")).join("\r\n");
+  const blob = new Blob(["\ufeff", content], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `CRAN-arquivo-morto-${todayISO()}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
+  toast("Arquivo morto exportado em CSV.");
+}
+
 async function restorePatient(item) {
+  if (!item) return;
   openDialog({
     title: "Restaurar paciente",
-    description: item.pacienteNome,
+    description: item.pacienteNome || archiveValue(item, "nome"),
     submitLabel: "Restaurar cadastro",
     body: `<div class="info-box">O paciente voltará para a lista de cadastros ativos. Depois, a recepção poderá colocá-lo novamente na fila de espera.</div>`,
     onSubmit: async () => {
       const batch = writeBatch(db);
-      batch.update(doc(db, "pacientes", item.pacienteId), {
-        status: "ativo",
-        arquivoMortoId: deleteField(),
-        atualizadoEm: serverTimestamp(),
-        atualizadoPor: state.user.uid
-      });
+      const patientId = item.pacienteId || item.id;
+      const patientRef = doc(db, "pacientes", patientId);
+      if (archiveIsLegacy(item)) {
+        const data = item.dadosPaciente || {};
+        const supportedSpecialty = (data.especialidades || []).find(name => SPECIALTIES[name]) || (SPECIALTIES[data.especialidade] ? data.especialidade : "");
+        batch.set(patientRef, {
+          ...data,
+          nome: item.pacienteNome || data.nome || "Paciente histórico",
+          cpf: "",
+          dataNascimento: "",
+          telefone: onlyDigits(data.telefone || ""),
+          dataEncaminhamento: todayISO(),
+          especialidade: supportedSpecialty,
+          tipoAtendimento: supportedSpecialty ? (SPECIALTIES[supportedSpecialty]?.tipos?.[0] || "Geral") : "",
+          classificacao: "Não se aplica",
+          modalidade: supportedSpecialty ? (SPECIALTIES[supportedSpecialty]?.modalidades?.[0] || "Presencial") : "Presencial",
+          endereco: "",
+          status: "ativo",
+          cadastroIncompleto: true,
+          criadoEm: serverTimestamp(),
+          atualizadoEm: serverTimestamp(),
+          atualizadoPor: state.user.uid,
+          restauradoDoLegado: true
+        }, { merge: true });
+      } else {
+        batch.update(patientRef, {
+          status: "ativo",
+          arquivoMortoId: deleteField(),
+          atualizadoEm: serverTimestamp(),
+          atualizadoPor: state.user.uid
+        });
+      }
       batch.update(doc(db, "arquivoMorto", item.id), {
         status: "restaurado",
         restauradoEm: serverTimestamp(),
         restauradoPor: state.user.uid
       });
       await batch.commit();
+      delete state.caches.archiveAll;
       await logAction("restaurar", "arquivoMorto", item.id, { pacienteNome: item.pacienteNome });
       toast("Paciente restaurado para os cadastros ativos.");
       await renderArchive();
@@ -2464,6 +2842,8 @@ el.pageContent.addEventListener("click", async event => {
     if (action === "reset-user") return await resetUser(findCached("users", id));
     if (action === "archive-details") return archiveDetails(findCached("archive", id));
     if (action === "restore-patient") return await restorePatient(findCached("archive", id));
+    if (action === "import-archive") return await openArchiveImportDialog();
+    if (action === "export-archive") return exportArchiveCSV();
   } catch (error) {
     console.error(error);
     toast(authErrorMessage(error), "error");
