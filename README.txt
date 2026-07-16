@@ -80,3 +80,14 @@ AVISO VISÍVEL — VERSÃO 1.2.2
 - Crédito em alto contraste: Sistema desenvolvido e emprestado por Eliel do Carmo.
 - Destaque maior também na tela de login.
 - Aviso adaptado para computador e celular sem cobrir o conteúdo.
+
+
+NOVIDADES DA VERSÃO 1.3.0 — RELATÓRIOS
+--------------------------------------
+- Nova aba Relatórios para administrador e recepção.
+- 13 modelos: resumo gerencial, fila atual, tempo de espera, histórico da fila, pacientes ativos, atendimentos, agenda, produtividade, faltas/cancelamentos, altas, domiciliares, especialidades e carteira por profissional.
+- Filtros por período, especialidade, profissional, classificação, status, modalidade e busca textual.
+- Atalhos de período: este mês, mês anterior, este ano e todo período.
+- Exportação CSV compatível com Excel.
+- Impressão e opção de salvar em PDF pelo navegador.
+- Não exige novas coleções nem alteração das regras do Firestore.

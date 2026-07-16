@@ -11,7 +11,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=1.2.2">
+  <link rel="stylesheet" href="styles.css?v=1.3.0">
 </head>
 <body>
   <div id="loading-screen" class="loading-screen">
@@ -123,6 +123,10 @@
           <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
           <span>Agenda</span>
         </button>
+        <button data-page="reports" class="nav-item" data-roles="admin,recepcao">
+          <svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/><path d="m4 7 6-4 6 6 6-5"/></svg>
+          <span>Relatórios</span>
+        </button>
         <button data-page="professionals" class="nav-item" data-roles="admin,recepcao">
           <svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M16 11h6"/></svg>
           <span>Profissionais</span>
@@ -224,6 +228,6 @@
 
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
-  <script type="module" src="app.js?v=1.2.2"></script>
+  <script type="module" src="app.js?v=1.3.0"></script>
 </body>
 </html>

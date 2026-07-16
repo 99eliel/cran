@@ -1,9 +1,9 @@
-const CACHE_NAME = "cran-v1.2.2";
+const CACHE_NAME = "cran-v1.3.0";
 const APP_SHELL = [
   "/",
   "/index.html",
-  "/styles.css?v=1.2.2",
-  "/app.js?v=1.2.2",
+  "/styles.css?v=1.3.0",
+  "/app.js?v=1.3.0",
   "/firebase-config.js",
   "/manifest.webmanifest",
   "/icon-192.png",

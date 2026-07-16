@@ -23,7 +23,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.2.2";
+const APP_VERSION = "1.3.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -61,6 +61,7 @@ const PAGE_META = {
   queue: ["Fila de espera", "Organização e encaminhamento manual"],
   care: ["Em atendimento", "Pacientes vinculados aos profissionais"],
   schedule: ["Agenda", "Atendimentos agendados por data e profissional"],
+  reports: ["Relatórios", "Indicadores, filtros, impressão e exportação"],
   professionals: ["Profissionais", "Equipe cadastrada no CRAN"],
   users: ["Usuários", "Acessos e permissões do sistema"],
   archive: ["Arquivo morto", "Pacientes concluídos e históricos arquivados"]
@@ -73,6 +74,7 @@ const state = {
   deferredInstallPrompt: null,
   registration: null,
   remoteVersion: APP_VERSION,
+  reportOutput: null,
   caches: {}
 };
 
@@ -305,7 +307,7 @@ function configureNavigation() {
     button.classList.toggle("hidden", !roles.includes(role));
   });
 
-  if (isProfessional() && ["queue", "professionals", "users", "archive"].includes(state.currentPage)) {
+  if (isProfessional() && ["queue", "reports", "professionals", "users", "archive"].includes(state.currentPage)) {
     state.currentPage = "dashboard";
   }
   if (!isAdmin() && state.currentPage === "users") state.currentPage = "dashboard";
@@ -329,6 +331,7 @@ async function renderCurrentPage() {
       case "queue": return await renderQueue();
       case "care": return await renderCare();
       case "schedule": return await renderSchedule();
+      case "reports": return await renderReports();
       case "professionals": return await renderProfessionals();
       case "users": return await renderUsers();
       case "archive": return await renderArchive();
@@ -1134,6 +1137,699 @@ function openAppointmentStatus(item) {
       await renderSchedule();
     }
   });
+}
+
+
+const REPORT_TYPES = {
+  geral: "Resumo gerencial",
+  fila_atual: "Fila de espera atual",
+  tempo_espera: "Tempo de espera",
+  historico_fila: "Histórico de movimentações da fila",
+  pacientes_ativos: "Pacientes ativos",
+  atendimentos: "Pacientes em atendimento",
+  agenda: "Agenda e produção de atendimentos",
+  produtividade: "Produtividade por profissional",
+  ausencias: "Faltas e cancelamentos",
+  altas: "Altas e arquivo morto",
+  domiciliares: "Atendimentos domiciliares",
+  especialidades: "Resumo por especialidade",
+  carteiras: "Carteira por profissional"
+};
+
+const REPORT_STATUS_NAMES = {
+  aguardando: "Aguardando",
+  encaminhado: "Encaminhado",
+  retirado: "Retirado",
+  ativo: "Ativo",
+  alta_solicitada: "Alta solicitada",
+  concluido: "Concluído",
+  agendado: "Agendado",
+  realizado: "Realizado",
+  falta: "Falta",
+  cancelado: "Cancelado",
+  arquivado: "Arquivado",
+  restaurado: "Restaurado",
+  em_atendimento: "Em atendimento",
+  na_fila: "Na fila"
+};
+
+function dateOnlyFrom(value) {
+  if (!value) return "";
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  const date = timestampToDate(value);
+  if (!date) return "";
+  const offset = date.getTimezoneOffset();
+  return new Date(date.getTime() - offset * 60000).toISOString().slice(0, 10);
+}
+
+function withinPeriod(value, start, end) {
+  const date = dateOnlyFrom(value);
+  if (!date) return !start && !end;
+  return (!start || date >= start) && (!end || date <= end);
+}
+
+function statusName(value = "") {
+  return REPORT_STATUS_NAMES[value] || String(value || "—").replaceAll("_", " ");
+}
+
+function numberBR(value, decimals = 0) {
+  return new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  }).format(Number(value || 0));
+}
+
+function percentBR(value, total) {
+  if (!total) return "0%";
+  return `${numberBR((value / total) * 100, 1)}%`;
+}
+
+function reportPeriodLabel(start, end) {
+  if (start && end) return `${dateToBR(start)} a ${dateToBR(end)}`;
+  if (start) return `A partir de ${dateToBR(start)}`;
+  if (end) return `Até ${dateToBR(end)}`;
+  return "Todo o período disponível";
+}
+
+function reportTypeOptions(selected = "geral") {
+  return Object.entries(REPORT_TYPES)
+    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${escapeHTML(label)}</option>`)
+    .join("");
+}
+
+function reportStatusOptions() {
+  const statuses = ["aguardando", "encaminhado", "retirado", "ativo", "alta_solicitada", "concluido", "agendado", "realizado", "falta", "cancelado", "arquivado", "restaurado"];
+  return statuses.map(value => `<option value="${value}">${escapeHTML(statusName(value))}</option>`).join("");
+}
+
+function reportMetric(label, value, note = "", tone = "teal") {
+  return { label, value: String(value), note, tone };
+}
+
+function reportSummaryHTML(items = []) {
+  if (!items.length) return "";
+  return `<div class="report-summary-grid">${items.map(item => `
+    <article class="report-summary-card ${escapeHTML(item.tone || "teal")}">
+      <span>${escapeHTML(item.label)}</span>
+      <strong>${escapeHTML(item.value)}</strong>
+      <small>${escapeHTML(item.note || "")}</small>
+    </article>`).join("")}</div>`;
+}
+
+function reportTableHTML(headers = [], rows = []) {
+  if (!rows.length) return emptyHTML("Nenhum registro no relatório", "Ajuste os filtros ou selecione outro período.");
+  return `<div class="table-wrap report-table-wrap"><table class="report-table">
+    <thead><tr>${headers.map(header => `<th>${escapeHTML(header)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map(row => `<tr>${row.map(value => `<td>${escapeHTML(value ?? "—")}</td>`).join("")}</tr>`).join("")}</tbody>
+  </table></div>`;
+}
+
+function reportFiltersText(filters) {
+  const parts = [reportPeriodLabel(filters.start, filters.end)];
+  if (filters.specialty) parts.push(`Especialidade: ${filters.specialty}`);
+  if (filters.professionalName) parts.push(`Profissional: ${filters.professionalName}`);
+  if (filters.classification) parts.push(`Classificação: ${filters.classification}`);
+  if (filters.status) parts.push(`Status: ${statusName(filters.status)}`);
+  if (filters.modality) parts.push(`Modalidade: ${filters.modality}`);
+  if (filters.search) parts.push(`Busca: ${filters.search}`);
+  return parts.join(" · ");
+}
+
+function matchesReportFilters(item, filters, dateValue = "", searchable = []) {
+  const professionalMatch = !filters.professionalId
+    || item.profissionalId === filters.professionalId
+    || item.id === filters.professionalId;
+  const haystack = normalize(searchable.map(field => item[field] || "").join(" "));
+  return withinPeriod(dateValue, filters.start, filters.end)
+    && (!filters.specialty || item.especialidade === filters.specialty)
+    && professionalMatch
+    && (!filters.classification || item.classificacao === filters.classification)
+    && (!filters.status || item.status === filters.status)
+    && (!filters.modality || item.modalidade === filters.modality)
+    && (!filters.search || haystack.includes(normalize(filters.search)));
+}
+
+function median(values = []) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function getReportFilters(data) {
+  const professionalId = document.querySelector("#report-professional")?.value || "";
+  return {
+    type: document.querySelector("#report-type")?.value || "geral",
+    start: document.querySelector("#report-start")?.value || "",
+    end: document.querySelector("#report-end")?.value || "",
+    specialty: document.querySelector("#report-specialty")?.value || "",
+    professionalId,
+    professionalName: data.professionals.find(item => item.id === professionalId)?.nome || "",
+    classification: document.querySelector("#report-classification")?.value || "",
+    status: document.querySelector("#report-status")?.value || "",
+    modality: document.querySelector("#report-modality")?.value || "",
+    search: document.querySelector("#report-search")?.value.trim() || ""
+  };
+}
+
+function reportResult({ title, description, summary = [], headers = [], rows = [] }, filters) {
+  return {
+    title,
+    description,
+    summary,
+    headers,
+    rows,
+    filtersText: reportFiltersText(filters),
+    generatedAt: new Date()
+  };
+}
+
+function buildGeneralReport(data, filters) {
+  const activePatients = data.patients.filter(item => item.status !== "arquivo_morto" && matchesReportFilters(item, { ...filters, start: "", end: "", status: "" }, "", ["nome", "cpf", "telefone", "profissionalNome"]));
+  const waiting = data.queue.filter(item => item.status === "aguardando" && matchesReportFilters(item, { ...filters, start: "", end: "", status: "" }, "", ["pacienteNome", "pacienteCpf"]));
+  const activeCare = data.care.filter(item => ["ativo", "alta_solicitada"].includes(item.status) && matchesReportFilters(item, { ...filters, start: "", end: "", status: "" }, "", ["pacienteNome", "profissionalNome"]));
+  const appointments = data.appointments.filter(item => matchesReportFilters(item, filters, item.data, ["pacienteNome", "profissionalNome"]));
+  const archived = data.archive.filter(item => matchesReportFilters(item, { ...filters, status: "" }, item.dataConclusao, ["pacienteNome", "profissionalNome", "motivo"]));
+  const realized = appointments.filter(item => item.status === "realizado").length;
+  const missed = appointments.filter(item => item.status === "falta").length;
+  const scheduledBase = appointments.filter(item => ["realizado", "falta"].includes(item.status)).length;
+  const averageWait = waiting.length ? waiting.reduce((sum, item) => sum + daysWaiting(item.dataEntrada), 0) / waiting.length : 0;
+  return reportResult({
+    title: "Resumo gerencial do CRAN",
+    description: "Visão consolidada dos cadastros, fila, atendimentos, agenda e conclusões.",
+    summary: [
+      reportMetric("Pacientes ativos", activePatients.length, "Cadastros fora do arquivo morto", "teal"),
+      reportMetric("Fila atual", waiting.length, `${waiting.filter(item => item.classificacao === "Urgência").length} urgência(s)`, "orange"),
+      reportMetric("Em atendimento", activeCare.length, `${activeCare.filter(item => item.modalidade === "Domiciliar").length} domiciliar(es)`, "blue"),
+      reportMetric("Agendamentos", appointments.length, `No período selecionado`, "violet"),
+      reportMetric("Realizados", realized, `${percentBR(realized, scheduledBase)} de comparecimento`, "teal"),
+      reportMetric("Altas/arquivamentos", archived.length, "No período selecionado", "orange")
+    ],
+    headers: ["Indicador", "Quantidade", "Detalhamento"],
+    rows: [
+      ["Pacientes ativos", activePatients.length, "Cadastros atualmente disponíveis"],
+      ["Pacientes aguardando", waiting.length, `${numberBR(averageWait, 1)} dia(s) de espera média`],
+      ["Urgências na fila", waiting.filter(item => item.classificacao === "Urgência").length, "Classificação atual"],
+      ["Pacientes em atendimento", activeCare.length, `${activeCare.filter(item => item.status === "alta_solicitada").length} com alta solicitada`],
+      ["Agendamentos no período", appointments.length, `${realized} realizados · ${missed} faltas · ${appointments.filter(item => item.status === "cancelado").length} cancelados`],
+      ["Taxa de comparecimento", percentBR(realized, scheduledBase), "Realizados ÷ realizados + faltas"],
+      ["Altas e arquivamentos", archived.length, reportPeriodLabel(filters.start, filters.end)]
+    ]
+  }, filters);
+}
+
+function buildQueueCurrentReport(data, filters) {
+  const items = data.queue
+    .filter(item => item.status === "aguardando")
+    .filter(item => matchesReportFilters(item, { ...filters, status: "" }, item.dataEntrada, ["pacienteNome", "pacienteCpf", "telefone", "observacoes"]))
+    .sort((a, b) => daysWaiting(b.dataEntrada) - daysWaiting(a.dataEntrada));
+  const waits = items.map(item => daysWaiting(item.dataEntrada));
+  return reportResult({
+    title: "Fila de espera atual",
+    description: "Relação nominal dos pacientes que ainda aguardam encaminhamento para um profissional.",
+    summary: [
+      reportMetric("Total aguardando", items.length, "Pacientes na fila", "orange"),
+      reportMetric("Urgências", items.filter(item => item.classificacao === "Urgência").length, "Prioridade máxima", "violet"),
+      reportMetric("Espera média", `${numberBR(waits.length ? waits.reduce((a, b) => a + b, 0) / waits.length : 0, 1)} dias`, "Tempo desde a entrada", "blue"),
+      reportMetric("Maior espera", `${Math.max(0, ...waits)} dias`, "Paciente mais antigo", "teal")
+    ],
+    headers: ["Paciente", "CPF", "Telefone", "Especialidade", "Tipo", "Classificação", "Modalidade", "Entrada", "Dias de espera"],
+    rows: items.map(item => [item.pacienteNome, formatCPF(item.pacienteCpf), formatPhone(item.telefone), item.especialidade, item.tipoAtendimento, item.classificacao, item.modalidade, formatTimestamp(item.dataEntrada, false), daysWaiting(item.dataEntrada)])
+  }, filters);
+}
+
+function buildWaitingTimeReport(data, filters) {
+  const items = data.queue
+    .filter(item => item.status === "aguardando")
+    .filter(item => matchesReportFilters(item, { ...filters, status: "" }, item.dataEntrada, ["pacienteNome", "pacienteCpf", "profissionalNome"]))
+    .map(item => ({ ...item, espera: daysWaiting(item.dataEntrada) }))
+    .sort((a, b) => b.espera - a.espera);
+  const values = items.map(item => item.espera);
+  const average = values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+  return reportResult({
+    title: "Análise do tempo de espera",
+    description: "Indicadores de permanência na fila para apoiar priorização e gestão de vagas.",
+    summary: [
+      reportMetric("Espera média", `${numberBR(average, 1)} dias`, "Todos os pacientes filtrados", "blue"),
+      reportMetric("Mediana", `${numberBR(median(values), 1)} dias`, "Valor central da fila", "teal"),
+      reportMetric("Acima de 30 dias", items.filter(item => item.espera > 30).length, "Pacientes com espera prolongada", "orange"),
+      reportMetric("Acima de 90 dias", items.filter(item => item.espera > 90).length, "Atenção prioritária", "violet")
+    ],
+    headers: ["Paciente", "Especialidade", "Classificação", "Modalidade", "Data de entrada", "Dias aguardando", "Faixa"],
+    rows: items.map(item => [item.pacienteNome, item.especialidade, item.classificacao, item.modalidade, formatTimestamp(item.dataEntrada, false), item.espera, item.espera > 90 ? "Acima de 90 dias" : item.espera > 30 ? "31 a 90 dias" : "Até 30 dias"])
+  }, filters);
+}
+
+function buildQueueHistoryReport(data, filters) {
+  const items = data.queue
+    .filter(item => matchesReportFilters(item, filters, item.dataEntrada, ["pacienteNome", "pacienteCpf", "profissionalNome", "motivoRetirada"]))
+    .sort((a, b) => (timestampToDate(b.dataEntrada)?.getTime() || 0) - (timestampToDate(a.dataEntrada)?.getTime() || 0));
+  return reportResult({
+    title: "Histórico de movimentações da fila",
+    description: "Entradas, encaminhamentos e retiradas registradas na fila de espera.",
+    summary: [
+      reportMetric("Entradas", items.length, "Registros no período", "blue"),
+      reportMetric("Aguardando", items.filter(item => item.status === "aguardando").length, "Ainda na fila", "orange"),
+      reportMetric("Encaminhados", items.filter(item => item.status === "encaminhado").length, "Vinculados a profissional", "teal"),
+      reportMetric("Retirados", items.filter(item => item.status === "retirado").length, "Saídas sem encaminhamento", "violet")
+    ],
+    headers: ["Paciente", "Especialidade", "Classificação", "Entrada", "Situação", "Profissional", "Saída", "Motivo da retirada"],
+    rows: items.map(item => [item.pacienteNome, item.especialidade, item.classificacao, formatTimestamp(item.dataEntrada), statusName(item.status), item.profissionalNome || "—", formatTimestamp(item.dataSaida || item.retiradoEm), item.motivoRetirada || "—"])
+  }, filters);
+}
+
+function buildPatientsReport(data, filters) {
+  const items = data.patients
+    .filter(item => item.status !== "arquivo_morto")
+    .filter(item => matchesReportFilters(item, filters, item.dataEncaminhamento || item.criadoEm, ["nome", "cpf", "telefone", "profissionalNome", "endereco"]))
+    .sort((a, b) => String(a.nome).localeCompare(String(b.nome)));
+  return reportResult({
+    title: "Pacientes ativos cadastrados",
+    description: "Cadastros ativos, incluindo pacientes disponíveis, na fila e em acompanhamento.",
+    summary: [
+      reportMetric("Total de pacientes", items.length, "Cadastros ativos", "teal"),
+      reportMetric("Na fila", items.filter(item => item.status === "na_fila").length, "Aguardando encaminhamento", "orange"),
+      reportMetric("Em atendimento", items.filter(item => item.status === "em_atendimento").length, "Com profissional vinculado", "blue"),
+      reportMetric("Domiciliares", items.filter(item => item.modalidade === "Domiciliar").length, "Modalidade cadastrada", "violet")
+    ],
+    headers: ["Paciente", "CPF", "Nascimento", "Telefone", "Especialidade", "Tipo", "Classificação", "Modalidade", "Situação", "Profissional"],
+    rows: items.map(item => [item.nome, formatCPF(item.cpf), dateToBR(item.dataNascimento), formatPhone(item.telefone), item.especialidade, item.tipoAtendimento, item.classificacao, item.modalidade, statusName(item.status), item.profissionalNome || "—"])
+  }, filters);
+}
+
+function buildCareReport(data, filters) {
+  const items = data.care
+    .filter(item => ["ativo", "alta_solicitada"].includes(item.status))
+    .filter(item => matchesReportFilters(item, filters, item.dataInicio, ["pacienteNome", "pacienteCpf", "profissionalNome", "telefone"]))
+    .sort((a, b) => String(a.profissionalNome).localeCompare(String(b.profissionalNome)) || String(a.pacienteNome).localeCompare(String(b.pacienteNome)));
+  return reportResult({
+    title: "Pacientes em atendimento",
+    description: "Carteira atual de pacientes vinculados aos profissionais do CRAN.",
+    summary: [
+      reportMetric("Em acompanhamento", items.length, "Atendimentos ativos", "teal"),
+      reportMetric("Alta solicitada", items.filter(item => item.status === "alta_solicitada").length, "Aguardando conclusão", "orange"),
+      reportMetric("Domiciliares", items.filter(item => item.modalidade === "Domiciliar").length, "Atendimento fora da unidade", "blue"),
+      reportMetric("Profissionais", new Set(items.map(item => item.profissionalId)).size, "Com pacientes vinculados", "violet")
+    ],
+    headers: ["Paciente", "Telefone", "Profissional", "Especialidade", "Tipo", "Classificação", "Modalidade", "Início", "Status"],
+    rows: items.map(item => [item.pacienteNome, formatPhone(item.telefone), item.profissionalNome, item.especialidade, item.tipoAtendimento, item.classificacao, item.modalidade, dateToBR(item.dataInicio), statusName(item.status)])
+  }, filters);
+}
+
+function buildAgendaReport(data, filters) {
+  const items = data.appointments
+    .filter(item => matchesReportFilters(item, filters, item.data, ["pacienteNome", "profissionalNome", "observacoes"]))
+    .sort((a, b) => `${a.data}${a.horario}`.localeCompare(`${b.data}${b.horario}`));
+  const attendanceBase = items.filter(item => ["realizado", "falta"].includes(item.status));
+  const realized = items.filter(item => item.status === "realizado").length;
+  return reportResult({
+    title: "Agenda e produção de atendimentos",
+    description: "Horários agendados e situação de comparecimento no período selecionado.",
+    summary: [
+      reportMetric("Agendamentos", items.length, "Total no período", "blue"),
+      reportMetric("Realizados", realized, `${percentBR(realized, attendanceBase.length)} de comparecimento`, "teal"),
+      reportMetric("Faltas", items.filter(item => item.status === "falta").length, "Não comparecimentos", "orange"),
+      reportMetric("Cancelados", items.filter(item => item.status === "cancelado").length, "Horários cancelados", "violet")
+    ],
+    headers: ["Data", "Horário", "Paciente", "Profissional", "Especialidade", "Modalidade", "Status", "Observações"],
+    rows: items.map(item => [dateToBR(item.data), item.horario, item.pacienteNome, item.profissionalNome, item.especialidade, item.modalidade || "—", statusName(item.status), item.observacoes || "—"])
+  }, filters);
+}
+
+function buildProductivityReport(data, filters) {
+  let professionals = data.professionals.filter(item => item.ativo !== false);
+  if (filters.professionalId) professionals = professionals.filter(item => item.id === filters.professionalId);
+  if (filters.specialty) professionals = professionals.filter(item => item.especialidade === filters.specialty);
+  if (filters.search) professionals = professionals.filter(item => normalize(`${item.nome} ${item.registro}`).includes(normalize(filters.search)));
+  const careById = new Map(data.care.map(item => [item.id, item]));
+  const rows = professionals.map(professional => {
+    const activeCare = data.care.filter(item => item.profissionalId === professional.id
+      && ["ativo", "alta_solicitada"].includes(item.status)
+      && matchesReportFilters(item, { ...filters, professionalId: professional.id }, item.dataInicio, ["pacienteNome", "profissionalNome"]));
+    const appointments = data.appointments.filter(item => {
+      const careItem = careById.get(item.atendimentoId) || {};
+      const enriched = { ...careItem, ...item, classificacao: careItem.classificacao || "" };
+      return item.profissionalId === professional.id
+        && matchesReportFilters(enriched, { ...filters, professionalId: professional.id }, item.data, ["pacienteNome", "profissionalNome", "observacoes"]);
+    });
+    const realized = appointments.filter(item => item.status === "realizado").length;
+    const missed = appointments.filter(item => item.status === "falta").length;
+    const cancel = appointments.filter(item => item.status === "cancelado").length;
+    return [professional.nome, professional.especialidade, activeCare.length, activeCare.filter(item => item.modalidade === "Domiciliar").length, appointments.length, realized, missed, cancel, percentBR(realized, realized + missed)];
+  }).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const totalAppointments = rows.reduce((sum, row) => sum + Number(row[4]), 0);
+  const totalRealized = rows.reduce((sum, row) => sum + Number(row[5]), 0);
+  const totalMissed = rows.reduce((sum, row) => sum + Number(row[6]), 0);
+  return reportResult({
+    title: "Produtividade por profissional",
+    description: "Comparativo de carteira, agenda, atendimentos realizados e faltas.",
+    summary: [
+      reportMetric("Profissionais", rows.length, "Incluídos no relatório", "violet"),
+      reportMetric("Agendamentos", totalAppointments, "No período", "blue"),
+      reportMetric("Realizados", totalRealized, "Produção registrada", "teal"),
+      reportMetric("Comparecimento", percentBR(totalRealized, totalRealized + totalMissed), "Realizados ÷ realizados + faltas", "orange")
+    ],
+    headers: ["Profissional", "Especialidade", "Carteira ativa", "Domiciliares", "Agendamentos", "Realizados", "Faltas", "Cancelados", "Comparecimento"],
+    rows
+  }, filters);
+}
+
+function buildAbsenceReport(data, filters) {
+  const items = data.appointments
+    .filter(item => ["falta", "cancelado"].includes(item.status))
+    .filter(item => matchesReportFilters(item, { ...filters, status: "" }, item.data, ["pacienteNome", "profissionalNome", "observacoes"]))
+    .sort((a, b) => `${b.data}${b.horario}`.localeCompare(`${a.data}${a.horario}`));
+  return reportResult({
+    title: "Faltas e cancelamentos",
+    description: "Ocorrências que não resultaram em atendimento realizado.",
+    summary: [
+      reportMetric("Ocorrências", items.length, "Faltas + cancelamentos", "orange"),
+      reportMetric("Faltas", items.filter(item => item.status === "falta").length, "Paciente não compareceu", "violet"),
+      reportMetric("Cancelamentos", items.filter(item => item.status === "cancelado").length, "Horários cancelados", "blue"),
+      reportMetric("Pacientes distintos", new Set(items.map(item => item.pacienteId)).size, "Pessoas envolvidas", "teal")
+    ],
+    headers: ["Data", "Horário", "Paciente", "Profissional", "Especialidade", "Ocorrência", "Observações"],
+    rows: items.map(item => [dateToBR(item.data), item.horario, item.pacienteNome, item.profissionalNome, item.especialidade, statusName(item.status), item.observacoes || "—"])
+  }, filters);
+}
+
+function buildDischargeReport(data, filters) {
+  const items = data.archive
+    .filter(item => matchesReportFilters(item, filters, item.dataConclusao, ["pacienteNome", "profissionalNome", "motivo", "observacoesFinais"]))
+    .sort((a, b) => String(b.dataConclusao).localeCompare(String(a.dataConclusao)));
+  return reportResult({
+    title: "Altas e arquivo morto",
+    description: "Pacientes concluídos, motivos de saída e profissionais responsáveis.",
+    summary: [
+      reportMetric("Conclusões", items.length, "Registros no período", "teal"),
+      reportMetric("Altas", items.filter(item => item.motivo === "Alta").length, "Tratamentos concluídos", "blue"),
+      reportMetric("Abandonos", items.filter(item => item.motivo === "Abandono").length, "Saída por abandono", "orange"),
+      reportMetric("Restaurados", items.filter(item => item.status === "restaurado").length, "Retornaram aos cadastros", "violet")
+    ],
+    headers: ["Paciente", "Especialidade", "Profissional", "Data da conclusão", "Motivo", "Situação do arquivo", "Observações finais"],
+    rows: items.map(item => [item.pacienteNome, item.especialidade, item.profissionalNome || "—", dateToBR(item.dataConclusao), item.motivo || "—", statusName(item.status), item.observacoesFinais || "—"])
+  }, filters);
+}
+
+function buildHomeCareReport(data, filters) {
+  const waiting = data.queue
+    .filter(item => item.status === "aguardando" && item.modalidade === "Domiciliar")
+    .filter(item => matchesReportFilters(item, { ...filters, modality: "", status: "" }, item.dataEntrada, ["pacienteNome", "pacienteCpf", "telefone"]));
+  const active = data.care
+    .filter(item => ["ativo", "alta_solicitada"].includes(item.status) && item.modalidade === "Domiciliar")
+    .filter(item => matchesReportFilters(item, { ...filters, modality: "", status: "" }, item.dataInicio, ["pacienteNome", "profissionalNome", "telefone"]));
+  const rows = [
+    ...waiting.map(item => [item.pacienteNome, formatPhone(item.telefone), item.especialidade, item.tipoAtendimento, item.classificacao, "Na fila", "—", formatTimestamp(item.dataEntrada, false)]),
+    ...active.map(item => [item.pacienteNome, formatPhone(item.telefone), item.especialidade, item.tipoAtendimento, item.classificacao, statusName(item.status), item.profissionalNome, dateToBR(item.dataInicio)])
+  ].sort((a, b) => String(a[2]).localeCompare(String(b[2])) || String(a[0]).localeCompare(String(b[0])));
+  return reportResult({
+    title: "Atendimentos domiciliares",
+    description: "Pacientes domiciliares na fila ou atualmente vinculados a profissionais.",
+    summary: [
+      reportMetric("Total domiciliar", rows.length, "Fila + atendimento", "blue"),
+      reportMetric("Aguardando", waiting.length, "Ainda sem profissional", "orange"),
+      reportMetric("Em atendimento", active.length, "Com profissional vinculado", "teal"),
+      reportMetric("Urgências", [...waiting, ...active].filter(item => item.classificacao === "Urgência").length, "Classificação atual", "violet")
+    ],
+    headers: ["Paciente", "Telefone", "Especialidade", "Tipo", "Classificação", "Situação", "Profissional", "Entrada/Início"],
+    rows
+  }, filters);
+}
+
+function buildSpecialtyReport(data, filters) {
+  let specialties = Object.keys(SPECIALTIES);
+  if (filters.specialty) specialties = specialties.filter(item => item === filters.specialty);
+  const rows = specialties.map(specialty => {
+    const scopedFilters = { ...filters, specialty };
+    const patients = data.patients.filter(item => item.status !== "arquivo_morto"
+      && item.especialidade === specialty
+      && matchesReportFilters(item, scopedFilters, item.dataEncaminhamento || item.criadoEm, ["nome", "cpf", "telefone", "profissionalNome"]));
+    const waiting = data.queue.filter(item => item.status === "aguardando"
+      && item.especialidade === specialty
+      && matchesReportFilters(item, { ...scopedFilters, status: "" }, item.dataEntrada, ["pacienteNome", "pacienteCpf", "profissionalNome"]));
+    const active = data.care.filter(item => ["ativo", "alta_solicitada"].includes(item.status)
+      && item.especialidade === specialty
+      && matchesReportFilters(item, scopedFilters, item.dataInicio, ["pacienteNome", "profissionalNome"]));
+    const appointments = data.appointments.filter(item => item.especialidade === specialty
+      && matchesReportFilters(item, scopedFilters, item.data, ["pacienteNome", "profissionalNome", "observacoes"]));
+    const realized = appointments.filter(item => item.status === "realizado").length;
+    const missed = appointments.filter(item => item.status === "falta").length;
+    const archived = data.archive.filter(item => item.especialidade === specialty
+      && matchesReportFilters(item, scopedFilters, item.dataConclusao, ["pacienteNome", "profissionalNome", "motivo"]));
+    const waits = waiting.map(item => daysWaiting(item.dataEntrada));
+    return [specialty, patients.length, waiting.length, numberBR(waits.length ? waits.reduce((a, b) => a + b, 0) / waits.length : 0, 1), active.length, appointments.length, realized, missed, archived.length];
+  });
+  return reportResult({
+    title: "Resumo por especialidade",
+    description: "Comparativo entre demanda, carteira e produção de cada serviço do CRAN.",
+    summary: [
+      reportMetric("Especialidades", rows.length, "Serviços incluídos", "violet"),
+      reportMetric("Fila total", rows.reduce((sum, row) => sum + Number(row[2]), 0), "Demanda atual", "orange"),
+      reportMetric("Em atendimento", rows.reduce((sum, row) => sum + Number(row[4]), 0), "Carteira ativa", "teal"),
+      reportMetric("Realizados", rows.reduce((sum, row) => sum + Number(row[6]), 0), "No período", "blue")
+    ],
+    headers: ["Especialidade", "Pacientes ativos", "Na fila", "Espera média (dias)", "Em atendimento", "Agendamentos", "Realizados", "Faltas", "Altas"],
+    rows
+  }, filters);
+}
+
+function buildPortfolioReport(data, filters) {
+  let professionals = data.professionals.filter(item => item.ativo !== false);
+  if (filters.professionalId) professionals = professionals.filter(item => item.id === filters.professionalId);
+  if (filters.specialty) professionals = professionals.filter(item => item.especialidade === filters.specialty);
+  if (filters.search) professionals = professionals.filter(item => normalize(`${item.nome} ${item.registro}`).includes(normalize(filters.search)));
+  const rows = professionals.map(professional => {
+    const items = data.care.filter(item => item.profissionalId === professional.id
+      && ["ativo", "alta_solicitada"].includes(item.status)
+      && matchesReportFilters(item, { ...filters, professionalId: professional.id }, item.dataInicio, ["pacienteNome", "profissionalNome"]));
+    return [
+      professional.nome,
+      professional.especialidade,
+      items.length,
+      items.filter(item => item.classificacao === "Urgência").length,
+      items.filter(item => item.classificacao === "Prioritário").length,
+      items.filter(item => item.classificacao === "Eletivo").length,
+      items.filter(item => item.modalidade === "Domiciliar").length,
+      items.filter(item => item.status === "alta_solicitada").length
+    ];
+  }).sort((a, b) => Number(b[2]) - Number(a[2]));
+  return reportResult({
+    title: "Carteira por profissional",
+    description: "Quantidade e perfil dos pacientes atualmente vinculados a cada profissional.",
+    summary: [
+      reportMetric("Profissionais", rows.length, "Com cadastro ativo", "violet"),
+      reportMetric("Pacientes vinculados", rows.reduce((sum, row) => sum + Number(row[2]), 0), "Carteira total", "teal"),
+      reportMetric("Urgências", rows.reduce((sum, row) => sum + Number(row[3]), 0), "Na carteira atual", "orange"),
+      reportMetric("Domiciliares", rows.reduce((sum, row) => sum + Number(row[6]), 0), "Atendimento domiciliar", "blue")
+    ],
+    headers: ["Profissional", "Especialidade", "Carteira total", "Urgências", "Prioritários", "Eletivos", "Domiciliares", "Alta solicitada"],
+    rows
+  }, filters);
+}
+
+function buildReport(data, filters) {
+  switch (filters.type) {
+    case "fila_atual": return buildQueueCurrentReport(data, filters);
+    case "tempo_espera": return buildWaitingTimeReport(data, filters);
+    case "historico_fila": return buildQueueHistoryReport(data, filters);
+    case "pacientes_ativos": return buildPatientsReport(data, filters);
+    case "atendimentos": return buildCareReport(data, filters);
+    case "agenda": return buildAgendaReport(data, filters);
+    case "produtividade": return buildProductivityReport(data, filters);
+    case "ausencias": return buildAbsenceReport(data, filters);
+    case "altas": return buildDischargeReport(data, filters);
+    case "domiciliares": return buildHomeCareReport(data, filters);
+    case "especialidades": return buildSpecialtyReport(data, filters);
+    case "carteiras": return buildPortfolioReport(data, filters);
+    default: return buildGeneralReport(data, filters);
+  }
+}
+
+function renderReportOutput(report) {
+  state.reportOutput = report;
+  const output = document.querySelector("#report-output");
+  if (!output) return;
+  output.innerHTML = `
+    <section class="report-document">
+      <div class="report-document-header">
+        <div>
+          <span class="report-kicker">Sistema CRAN · Relatório gerencial</span>
+          <h2>${escapeHTML(report.title)}</h2>
+          <p>${escapeHTML(report.description)}</p>
+        </div>
+        <div class="report-generated">
+          <strong>${escapeHTML(formatTimestamp(report.generatedAt))}</strong>
+          <span>Gerado por ${escapeHTML(state.profile?.nome || state.user?.email || "Usuário")}</span>
+        </div>
+      </div>
+      <div class="report-filter-line"><strong>Filtros:</strong> ${escapeHTML(report.filtersText)}</div>
+      ${reportSummaryHTML(report.summary)}
+      <div class="report-result-count">${report.rows.length} linha(s) no resultado</div>
+      ${reportTableHTML(report.headers, report.rows)}
+      <footer class="report-document-footer">Sistema desenvolvido e emprestado por <strong>Eliel do Carmo</strong></footer>
+    </section>`;
+  document.querySelector("#report-export").disabled = false;
+  document.querySelector("#report-print").disabled = false;
+}
+
+function setReportPeriod(mode) {
+  const now = new Date();
+  const startInput = document.querySelector("#report-start");
+  const endInput = document.querySelector("#report-end");
+  if (!startInput || !endInput) return;
+  if (mode === "all") {
+    startInput.value = "";
+    endInput.value = "";
+    return;
+  }
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  let start;
+  let end;
+  if (mode === "month") {
+    start = new Date(year, month, 1);
+    end = new Date(year, month + 1, 0);
+  } else if (mode === "last_month") {
+    start = new Date(year, month - 1, 1);
+    end = new Date(year, month, 0);
+  } else if (mode === "year") {
+    start = new Date(year, 0, 1);
+    end = new Date(year, 11, 31);
+  }
+  startInput.value = dateOnlyFrom(start);
+  endInput.value = dateOnlyFrom(end);
+}
+
+function exportReportCSV() {
+  const report = state.reportOutput;
+  if (!report) return;
+  const escapeCSV = value => {
+    const text = String(value ?? "").replaceAll('"', '""');
+    return `"${text}"`;
+  };
+  const lines = [
+    [report.title],
+    [report.description],
+    [`Filtros: ${report.filtersText}`],
+    [`Gerado em: ${formatTimestamp(report.generatedAt)}`],
+    [],
+    report.headers,
+    ...report.rows
+  ].map(row => row.map(escapeCSV).join(";")).join("\r\n");
+  const blob = new Blob(["\ufeff", lines], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `CRAN-${normalize(report.title).replaceAll(" ", "-")}-${todayISO()}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  toast("Relatório exportado em CSV compatível com Excel.");
+}
+
+function printReport() {
+  const report = state.reportOutput;
+  if (!report) return;
+  const summary = report.summary.map(item => `<div class="metric"><span>${escapeHTML(item.label)}</span><strong>${escapeHTML(item.value)}</strong><small>${escapeHTML(item.note || "")}</small></div>`).join("");
+  const table = report.rows.length
+    ? `<table><thead><tr>${report.headers.map(item => `<th>${escapeHTML(item)}</th>`).join("")}</tr></thead><tbody>${report.rows.map(row => `<tr>${row.map(value => `<td>${escapeHTML(value ?? "—")}</td>`).join("")}</tr>`).join("")}</tbody></table>`
+    : `<p class="empty">Nenhum registro para os filtros selecionados.</p>`;
+  const popup = window.open("", "_blank", "width=1280,height=840");
+  if (!popup) {
+    toast("O navegador bloqueou a janela de impressão. Libere pop-ups para este endereço.", "error");
+    return;
+  }
+  popup.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHTML(report.title)}</title><style>
+    @page{size:landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#183034;margin:0;font-size:10px}header{display:flex;justify-content:space-between;gap:20px;border-bottom:3px solid #1f776d;padding-bottom:12px;margin-bottom:12px}h1{font-size:22px;margin:3px 0 5px;color:#123f4a}header p{margin:0;color:#65777a}.brand{font-weight:800;color:#1f776d;letter-spacing:.08em}.filters{padding:8px 10px;background:#eef5f3;border:1px solid #dce6e3;margin-bottom:12px}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:12px}.metric{border:1px solid #dce6e3;border-radius:7px;padding:8px}.metric span,.metric small{display:block;color:#687b7e}.metric strong{display:block;font-size:17px;color:#123f4a;margin:4px 0}table{width:100%;border-collapse:collapse}th,td{border:1px solid #cfdad7;padding:5px 6px;text-align:left;vertical-align:top}th{background:#123f4a;color:white;font-size:9px}tr:nth-child(even) td{background:#f6f9f8}footer{margin-top:12px;padding-top:8px;border-top:1px solid #dce6e3;text-align:center;color:#5f7376;font-size:9px}.empty{text-align:center;padding:30px}.meta{text-align:right;white-space:nowrap}@media print{button{display:none}}
+  </style></head><body><header><div><div class="brand">SISTEMA CRAN</div><h1>${escapeHTML(report.title)}</h1><p>${escapeHTML(report.description)}</p></div><div class="meta">Gerado em ${escapeHTML(formatTimestamp(report.generatedAt))}<br>Por ${escapeHTML(state.profile?.nome || state.user?.email || "Usuário")}</div></header><div class="filters"><strong>Filtros:</strong> ${escapeHTML(report.filtersText)}</div><div class="summary">${summary}</div>${table}<footer>Sistema desenvolvido e emprestado por <strong>Eliel do Carmo</strong></footer><script>window.onload=()=>{window.print();};<\/script></body></html>`);
+  popup.document.close();
+}
+
+async function renderReports() {
+  if (!canManage()) {
+    el.pageContent.innerHTML = emptyHTML("Acesso restrito", "Os relatórios gerenciais estão disponíveis para administração e recepção.");
+    return;
+  }
+  const [patients, queueItems, care, appointments, professionals, archive] = await Promise.all([
+    readCollection("pacientes"),
+    readCollection("filaEspera"),
+    readCollection("atendimentos"),
+    readCollection("agendamentos"),
+    readCollection("profissionais"),
+    readCollection("arquivoMorto")
+  ]);
+  const data = { patients, queue: queueItems, care, appointments, professionals, archive };
+  state.caches.reportData = data;
+  const professionalOptions = professionals
+    .filter(item => item.ativo !== false)
+    .sort((a, b) => String(a.nome).localeCompare(String(b.nome)))
+    .map(item => `<option value="${item.id}">${escapeHTML(item.nome)} — ${escapeHTML(item.especialidade)}</option>`)
+    .join("");
+
+  el.pageContent.innerHTML = `
+    <section class="reports-hero">
+      <div>
+        <span class="eyebrow">Central de indicadores</span>
+        <h2>Relatórios completos do CRAN</h2>
+        <p>Combine filtros, visualize indicadores, exporte para Excel ou use a impressão para salvar em PDF.</p>
+      </div>
+      <div class="report-quick-periods">
+        <button type="button" data-report-period="month">Este mês</button>
+        <button type="button" data-report-period="last_month">Mês anterior</button>
+        <button type="button" data-report-period="year">Este ano</button>
+        <button type="button" data-report-period="all">Todo período</button>
+      </div>
+    </section>
+    <section class="panel report-control-panel">
+      <div class="report-filter-grid">
+        <label class="report-type-field">Tipo de relatório<select id="report-type">${reportTypeOptions()}</select></label>
+        <label>Data inicial<input id="report-start" type="date"></label>
+        <label>Data final<input id="report-end" type="date"></label>
+        <label>Especialidade<select id="report-specialty"><option value="">Todas</option>${specialtyOptions()}</select></label>
+        <label>Profissional<select id="report-professional"><option value="">Todos</option>${professionalOptions}</select></label>
+        <label>Classificação<select id="report-classification"><option value="">Todas</option>${classificationOptions()}</select></label>
+        <label>Status<select id="report-status"><option value="">Todos</option>${reportStatusOptions()}</select></label>
+        <label>Modalidade<select id="report-modality"><option value="">Todas</option><option>Presencial</option><option>Domiciliar</option></select></label>
+        <label class="report-search-field">Paciente, profissional ou observação<input id="report-search" type="search" placeholder="Digite para refinar o relatório"></label>
+      </div>
+      <div class="report-control-actions">
+        <button id="report-clear" class="secondary-button" type="button">Limpar filtros</button>
+        <button id="report-generate" class="primary-button" type="button">Gerar relatório</button>
+      </div>
+    </section>
+    <div class="report-export-bar">
+      <div><strong>Resultado do relatório</strong><span>Os dados abaixo refletem os filtros selecionados.</span></div>
+      <div>
+        <button id="report-export" class="secondary-button" type="button" disabled>Exportar para Excel (CSV)</button>
+        <button id="report-print" class="primary-button" type="button" disabled>Imprimir / Salvar PDF</button>
+      </div>
+    </div>
+    <div id="report-output">${loadingHTML("Gerando relatório inicial...")}</div>`;
+
+  const generate = () => {
+    const filters = getReportFilters(data);
+    if (filters.start && filters.end && filters.start > filters.end) {
+      toast("A data inicial não pode ser posterior à data final.", "error");
+      return;
+    }
+    renderReportOutput(buildReport(data, filters));
+  };
+
+  document.querySelectorAll("[data-report-period]").forEach(button => button.addEventListener("click", () => {
+    setReportPeriod(button.dataset.reportPeriod);
+    generate();
+  }));
+  document.querySelector("#report-generate").addEventListener("click", generate);
+  document.querySelector("#report-export").addEventListener("click", exportReportCSV);
+  document.querySelector("#report-print").addEventListener("click", printReport);
+  document.querySelector("#report-clear").addEventListener("click", () => {
+    document.querySelector("#report-type").value = "geral";
+    ["#report-start", "#report-end", "#report-specialty", "#report-professional", "#report-classification", "#report-status", "#report-modality", "#report-search"].forEach(selector => document.querySelector(selector).value = "");
+    generate();
+  });
+  document.querySelector("#report-type").addEventListener("change", generate);
+  generate();
 }
 
 async function renderProfessionals() {
