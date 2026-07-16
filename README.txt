@@ -91,3 +91,14 @@ NOVIDADES DA VERSÃO 1.3.0 — RELATÓRIOS
 - Exportação CSV compatível com Excel.
 - Impressão e opção de salvar em PDF pelo navegador.
 - Não exige novas coleções nem alteração das regras do Firestore.
+
+
+NOVIDADES DA VERSÃO 1.4.0 — AGENDA REORGANIZADA
+- Visualização diária, semanal e lista mensal.
+- Navegação rápida entre dias, semanas e meses.
+- Filtros separados por profissional, especialidade, situação e busca.
+- Indicadores de agendados, realizados, faltas e cancelados.
+- Novo agendamento em etapas: profissional, paciente, data e horário.
+- Edição e remarcação de horários.
+- Cancelamento com motivo obrigatório e preservação no histórico.
+- Interface adaptada para celular e computador.

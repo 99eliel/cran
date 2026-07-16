@@ -23,7 +23,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -60,7 +60,7 @@ const PAGE_META = {
   patients: ["Pacientes", "Cadastros ativos e pacientes vinculados"],
   queue: ["Fila de espera", "Organização e encaminhamento manual"],
   care: ["Em atendimento", "Pacientes vinculados aos profissionais"],
-  schedule: ["Agenda", "Atendimentos agendados por data e profissional"],
+  schedule: ["Agenda", "Visão diária e semanal dos atendimentos por profissional"],
   reports: ["Relatórios", "Indicadores, filtros, impressão e exportação"],
   professionals: ["Profissionais", "Equipe cadastrada no CRAN"],
   users: ["Usuários", "Acessos e permissões do sistema"],
@@ -1018,49 +1018,293 @@ async function renderSchedule() {
   } else {
     appointments = await readCollection("agendamentos");
   }
+
+  const professionals = canManage()
+    ? (await readCollection("profissionais")).filter(item => item.ativo !== false).sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"))
+    : [];
+
   state.caches.schedule = appointments;
-  const defaultDate = todayISO();
+  let selectedDate = state.caches.scheduleDate || todayISO();
+  let currentView = state.caches.scheduleView || "day";
 
   el.pageContent.innerHTML = `
-    <div class="page-toolbar">
-      <div class="filters">
-        <input id="schedule-date" type="date" value="${defaultDate}">
-        <select id="schedule-status"><option value="">Todos os status</option><option value="agendado">Agendado</option><option value="realizado">Realizado</option><option value="falta">Falta</option><option value="cancelado">Cancelado</option></select>
-        <input id="schedule-search" type="search" placeholder="Paciente ou profissional">
+    <section class="schedule-command">
+      <div class="schedule-navigation">
+        <button id="schedule-prev" class="schedule-nav-button" type="button" aria-label="Período anterior">‹</button>
+        <button id="schedule-today" class="secondary-button" type="button">Hoje</button>
+        <button id="schedule-next" class="schedule-nav-button" type="button" aria-label="Próximo período">›</button>
+        <input id="schedule-date" class="schedule-date-input" type="date" value="${selectedDate}">
+        <div>
+          <strong id="schedule-range-title" class="schedule-range-title"></strong>
+          <small id="schedule-range-subtitle" class="schedule-range-subtitle"></small>
+        </div>
       </div>
-      ${canManage() ? `<button class="primary-button" data-action="new-appointment">+ Novo agendamento</button>` : ""}
-    </div>
-    <div class="panel" id="schedule-panel"></div>`;
+      <div class="schedule-command-actions">
+        <div class="schedule-view-switch" aria-label="Visualização da agenda">
+          <button type="button" data-schedule-view="day">Dia</button>
+          <button type="button" data-schedule-view="week">Semana</button>
+          <button type="button" data-schedule-view="list">Lista do mês</button>
+        </div>
+        ${canManage() ? `<button class="primary-button" data-action="new-appointment">+ Novo agendamento</button>` : ""}
+      </div>
+    </section>
+
+    <section class="schedule-filter-bar">
+      ${canManage() ? `<label>Profissional<select id="schedule-professional-filter"><option value="">Todos os profissionais</option>${professionals.map(item => `<option value="${item.id}">${escapeHTML(item.nome)} — ${escapeHTML(item.especialidade)}</option>`).join("")}</select></label>` : ""}
+      <label>Especialidade<select id="schedule-specialty-filter"><option value="">Todas as especialidades</option>${specialtyOptions()}</select></label>
+      <label>Situação<select id="schedule-status"><option value="">Todas as situações</option><option value="agendado">Agendado</option><option value="realizado">Realizado</option><option value="falta">Falta</option><option value="cancelado">Cancelado</option></select></label>
+      <label class="schedule-search-label">Buscar<input id="schedule-search" type="search" placeholder="Paciente ou profissional"></label>
+      <button id="schedule-clear-filters" class="secondary-button" type="button">Limpar filtros</button>
+    </section>
+
+    <div id="schedule-metrics" class="metric-grid schedule-metrics"></div>
+    <div id="schedule-panel"></div>`;
+
+  const controls = {
+    date: document.querySelector("#schedule-date"),
+    professional: document.querySelector("#schedule-professional-filter"),
+    specialty: document.querySelector("#schedule-specialty-filter"),
+    status: document.querySelector("#schedule-status"),
+    search: document.querySelector("#schedule-search"),
+    metrics: document.querySelector("#schedule-metrics"),
+    panel: document.querySelector("#schedule-panel"),
+    title: document.querySelector("#schedule-range-title"),
+    subtitle: document.querySelector("#schedule-range-subtitle")
+  };
+
+  const filteredAppointments = () => {
+    const professionalId = controls.professional?.value || "";
+    const specialty = controls.specialty.value;
+    const status = controls.status.value;
+    const term = normalize(controls.search.value);
+    return appointments.filter(item =>
+      (!professionalId || item.profissionalId === professionalId)
+      && (!specialty || item.especialidade === specialty)
+      && (!status || item.status === status)
+      && (!term || normalize(`${item.pacienteNome} ${item.profissionalNome} ${item.especialidade} ${item.observacoes || ""}`).includes(term))
+    );
+  };
 
   const apply = () => {
-    const date = document.querySelector("#schedule-date").value;
-    const status = document.querySelector("#schedule-status").value;
-    const term = normalize(document.querySelector("#schedule-search").value);
-    const filtered = appointments.filter(item =>
-      (!date || item.data === date)
-      && (!status || item.status === status)
-      && (!term || normalize(`${item.pacienteNome} ${item.profissionalNome}`).includes(term))
-    );
-    document.querySelector("#schedule-panel").innerHTML = scheduleTable(filtered, true);
+    state.caches.scheduleDate = selectedDate;
+    state.caches.scheduleView = currentView;
+    controls.date.value = selectedDate;
+    document.querySelectorAll("[data-schedule-view]").forEach(button => {
+      button.classList.toggle("active", button.dataset.scheduleView === currentView);
+    });
+
+    const range = scheduleDateRange(currentView, selectedDate);
+    const base = filteredAppointments();
+    const periodItems = base.filter(item => item.data >= range.start && item.data <= range.end);
+    const counts = scheduleStatusCounts(periodItems);
+
+    controls.title.textContent = range.title;
+    controls.subtitle.textContent = range.subtitle;
+    controls.metrics.innerHTML = `
+      ${metricCard("Agendados", counts.agendado, "Horários ainda pendentes", "calendar", "blue")}
+      ${metricCard("Realizados", counts.realizado, "Atendimentos concluídos", "heart", "teal")}
+      ${metricCard("Faltas", counts.falta, "Pacientes que não compareceram", "alert", "orange")}
+      ${metricCard("Cancelados", counts.cancelado, "Horários cancelados", "queue", "violet")}`;
+
+    if (currentView === "week") {
+      controls.panel.innerHTML = scheduleWeekView(periodItems, range.start);
+    } else if (currentView === "list") {
+      controls.panel.innerHTML = scheduleListView(periodItems);
+    } else {
+      controls.panel.innerHTML = scheduleDayView(periodItems, selectedDate);
+    }
+
+    controls.panel.querySelectorAll("[data-schedule-open]").forEach(button => {
+      button.addEventListener("click", () => {
+        selectedDate = button.dataset.scheduleOpen;
+        currentView = "day";
+        apply();
+      });
+    });
   };
-  ["#schedule-date", "#schedule-status", "#schedule-search"].forEach(selector => {
-    document.querySelector(selector).addEventListener(selector.includes("search") ? "input" : "change", apply);
+
+  document.querySelector("#schedule-prev").addEventListener("click", () => {
+    selectedDate = scheduleMoveDate(selectedDate, currentView, -1);
+    apply();
   });
+  document.querySelector("#schedule-next").addEventListener("click", () => {
+    selectedDate = scheduleMoveDate(selectedDate, currentView, 1);
+    apply();
+  });
+  document.querySelector("#schedule-today").addEventListener("click", () => {
+    selectedDate = todayISO();
+    apply();
+  });
+  controls.date.addEventListener("change", () => {
+    selectedDate = controls.date.value || todayISO();
+    apply();
+  });
+  document.querySelectorAll("[data-schedule-view]").forEach(button => {
+    button.addEventListener("click", () => {
+      currentView = button.dataset.scheduleView;
+      apply();
+    });
+  });
+  [controls.professional, controls.specialty, controls.status].filter(Boolean).forEach(control => control.addEventListener("change", apply));
+  controls.search.addEventListener("input", apply);
+  document.querySelector("#schedule-clear-filters").addEventListener("click", () => {
+    if (controls.professional) controls.professional.value = "";
+    controls.specialty.value = "";
+    controls.status.value = "";
+    controls.search.value = "";
+    apply();
+  });
+
   apply();
+}
+
+function parseISODate(value) {
+  const [year, month, day] = String(value || todayISO()).split("-").map(Number);
+  return new Date(year, month - 1, day, 12, 0, 0, 0);
+}
+
+function dateToISO(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDaysISO(value, amount) {
+  const date = parseISODate(value);
+  date.setDate(date.getDate() + amount);
+  return dateToISO(date);
+}
+
+function startOfWeekISO(value) {
+  const date = parseISODate(value);
+  const day = date.getDay();
+  const distance = day === 0 ? -6 : 1 - day;
+  date.setDate(date.getDate() + distance);
+  return dateToISO(date);
+}
+
+function scheduleDateRange(view, selectedDate) {
+  const date = parseISODate(selectedDate);
+  if (view === "week") {
+    const start = startOfWeekISO(selectedDate);
+    const end = addDaysISO(start, 6);
+    return {
+      start,
+      end,
+      title: `${dateToBR(start)} a ${dateToBR(end)}`,
+      subtitle: "Agenda semanal de segunda a domingo"
+    };
+  }
+  if (view === "list") {
+    const startDate = new Date(date.getFullYear(), date.getMonth(), 1, 12);
+    const endDate = new Date(date.getFullYear(), date.getMonth() + 1, 0, 12);
+    const monthName = new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(date);
+    return {
+      start: dateToISO(startDate),
+      end: dateToISO(endDate),
+      title: monthName.charAt(0).toUpperCase() + monthName.slice(1),
+      subtitle: "Lista completa dos horários do mês"
+    };
+  }
+  const title = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "2-digit", month: "long" }).format(date);
+  return {
+    start: selectedDate,
+    end: selectedDate,
+    title: title.charAt(0).toUpperCase() + title.slice(1),
+    subtitle: selectedDate === todayISO() ? "Agenda de hoje" : `Agenda do dia ${dateToBR(selectedDate)}`
+  };
+}
+
+function scheduleMoveDate(selectedDate, view, direction) {
+  if (view === "week") return addDaysISO(selectedDate, 7 * direction);
+  if (view === "list") {
+    const date = parseISODate(selectedDate);
+    date.setMonth(date.getMonth() + direction, 1);
+    return dateToISO(date);
+  }
+  return addDaysISO(selectedDate, direction);
+}
+
+function scheduleStatusCounts(items) {
+  return items.reduce((counts, item) => {
+    const status = item.status || "agendado";
+    if (Object.hasOwn(counts, status)) counts[status] += 1;
+    return counts;
+  }, { agendado: 0, realizado: 0, falta: 0, cancelado: 0 });
+}
+
+function scheduleItemActions(item) {
+  const isCancelled = item.status === "cancelado";
+  if (canManage()) {
+    return `<div class="schedule-card-actions">
+      <button class="table-button" data-action="edit-appointment" data-id="${item.id}">Editar</button>
+      <button class="table-button primary" data-action="appointment-status" data-id="${item.id}">Presença</button>
+      ${isCancelled ? "" : `<button class="table-button danger" data-action="cancel-appointment" data-id="${item.id}">Cancelar</button>`}
+    </div>`;
+  }
+  return `<div class="schedule-card-actions"><button class="table-button primary" data-action="appointment-status" data-id="${item.id}">Registrar presença</button></div>`;
+}
+
+function scheduleDayView(items, selectedDate) {
+  const sorted = [...items].sort((a, b) => String(a.horario || "").localeCompare(String(b.horario || "")) || a.pacienteNome.localeCompare(b.pacienteNome, "pt-BR"));
+  if (!sorted.length) {
+    return `<div class="panel">${emptyHTML("Dia sem agendamentos", `Não existem horários cadastrados para ${dateToBR(selectedDate)}.`)}</div>`;
+  }
+  return `<section class="panel schedule-day-panel">
+    <div class="panel-header"><div><h3>Horários do dia</h3><p>${sorted.length} ${sorted.length === 1 ? "atendimento encontrado" : "atendimentos encontrados"}</p></div><div class="schedule-legend"><span><i class="status-dot scheduled"></i>Agendado</span><span><i class="status-dot done"></i>Realizado</span><span><i class="status-dot absent"></i>Falta/cancelado</span></div></div>
+    <div class="schedule-timeline">${sorted.map(item => `
+      <article class="schedule-card status-${escapeHTML(item.status || "agendado")}">
+        <time>${escapeHTML(item.horario || "—")}</time>
+        <div class="schedule-card-main">
+          <div class="schedule-card-heading"><div><strong>${escapeHTML(item.pacienteNome)}</strong><span>${escapeHTML(item.especialidade || "—")} · ${escapeHTML(item.modalidade || "Presencial")}</span></div>${badge(item.status || "agendado")}</div>
+          <div class="schedule-card-professional"><span>Profissional</span><strong>${escapeHTML(item.profissionalNome || "—")}</strong></div>
+          ${item.observacoes ? `<p class="schedule-card-note">${escapeHTML(item.observacoes)}</p>` : ""}
+        </div>
+        ${scheduleItemActions(item)}
+      </article>`).join("")}</div>
+  </section>`;
+}
+
+function scheduleWeekView(items, weekStart) {
+  const days = Array.from({ length: 7 }, (_, index) => addDaysISO(weekStart, index));
+  const sortedItems = [...items].sort((a, b) => `${a.data}${a.horario}`.localeCompare(`${b.data}${b.horario}`));
+  return `<section class="panel schedule-week-panel">
+    <div class="schedule-week-scroll"><div class="schedule-week-grid">${days.map(day => {
+      const date = parseISODate(day);
+      const dayItems = sortedItems.filter(item => item.data === day);
+      const weekday = new Intl.DateTimeFormat("pt-BR", { weekday: "short" }).format(date).replace(".", "");
+      return `<div class="schedule-week-day ${day === todayISO() ? "today" : ""}">
+        <button class="schedule-week-heading" type="button" data-schedule-open="${day}"><span>${escapeHTML(weekday)}</span><strong>${String(date.getDate()).padStart(2, "0")}</strong><small>${dayItems.length} ${dayItems.length === 1 ? "horário" : "horários"}</small></button>
+        <div class="schedule-week-events">${dayItems.length ? dayItems.map(item => `<article class="schedule-week-event status-${escapeHTML(item.status || "agendado")}"><div><time>${escapeHTML(item.horario || "—")}</time>${badge(item.status || "agendado")}</div><strong>${escapeHTML(item.pacienteNome)}</strong><span>${escapeHTML(item.profissionalNome || "—")}</span><small>${escapeHTML(item.especialidade || "—")}</small></article>`).join("") : `<p class="schedule-week-empty">Sem horários</p>`}</div>
+      </div>`;
+    }).join("")}</div></div>
+    <p class="schedule-week-help">Clique no cabeçalho de um dia para abrir a agenda diária e acessar as ações.</p>
+  </section>`;
+}
+
+function scheduleListView(items) {
+  if (!items.length) return `<div class="panel">${emptyHTML("Nenhum agendamento no mês", "Altere o período ou os filtros para localizar outros horários.")}</div>`;
+  const grouped = [...items].sort((a, b) => `${a.data}${a.horario}`.localeCompare(`${b.data}${b.horario}`)).reduce((groups, item) => {
+    (groups[item.data] ||= []).push(item);
+    return groups;
+  }, {});
+  return `<div class="schedule-month-list">${Object.entries(grouped).map(([date, dayItems]) => `<section class="panel schedule-list-day"><div class="schedule-list-date"><strong>${dateToBR(date)}</strong><span>${new Intl.DateTimeFormat("pt-BR", { weekday: "long" }).format(parseISODate(date))}</span><small>${dayItems.length} ${dayItems.length === 1 ? "horário" : "horários"}</small></div><div class="schedule-list-items">${dayItems.map(item => `<article class="schedule-list-item"><time>${escapeHTML(item.horario || "—")}</time><div><strong>${escapeHTML(item.pacienteNome)}</strong><span>${escapeHTML(item.profissionalNome || "—")} · ${escapeHTML(item.especialidade || "—")}</span></div>${badge(item.status || "agendado")}${scheduleItemActions(item)}</article>`).join("")}</div></section>`).join("")}</div>`;
 }
 
 function scheduleTable(items, actions = true) {
   if (!items.length) return emptyHTML("Nenhum agendamento encontrado", "Não existem horários para os filtros selecionados.");
-  const sorted = [...items].sort((a,b) => `${a.data}${a.horario}`.localeCompare(`${b.data}${b.horario}`));
+  const sorted = [...items].sort((a, b) => `${a.data}${a.horario}`.localeCompare(`${b.data}${b.horario}`));
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Data e hora</th><th>Paciente</th><th>Profissional</th><th>Especialidade</th><th>Status</th>${actions ? "<th>Ações</th>" : ""}</tr></thead>
+    <thead><tr><th>Data</th><th>Horário</th><th>Paciente</th><th>Profissional</th><th>Especialidade</th><th>Situação</th>${actions ? "<th>Ações</th>" : ""}</tr></thead>
     <tbody>${sorted.map(item => `<tr>
-      <td><strong>${escapeHTML(dateToBR(item.data))}</strong><br><small>${escapeHTML(item.horario)}</small></td>
-      <td>${escapeHTML(item.pacienteNome)}</td>
-      <td>${escapeHTML(item.profissionalNome)}</td>
-      <td>${escapeHTML(item.especialidade)}</td>
-      <td>${badge(item.status?.replace("_", " ") || "agendado")}</td>
-      ${actions ? `<td><div class="actions-cell"><button class="table-button" data-action="appointment-status" data-id="${item.id}">Atualizar</button>${canManage() ? `<button class="table-button danger" data-action="cancel-appointment" data-id="${item.id}">Cancelar</button>` : ""}</div></td>` : ""}
+      <td><strong>${escapeHTML(dateToBR(item.data))}</strong></td>
+      <td>${escapeHTML(item.horario || "—")}</td>
+      <td><strong>${escapeHTML(item.pacienteNome)}</strong>${item.modalidade ? `<br><small>${escapeHTML(item.modalidade)}</small>` : ""}</td>
+      <td>${escapeHTML(item.profissionalNome || "—")}</td>
+      <td>${escapeHTML(item.especialidade || "—")}</td>
+      <td>${badge(item.status || "agendado")}</td>
+      ${actions ? `<td>${scheduleItemActions(item)}</td>` : ""}
     </tr>`).join("")}</tbody>
   </table></div>`;
 }
@@ -1068,30 +1312,54 @@ function scheduleTable(items, actions = true) {
 async function openAppointmentDialog(careItem = null) {
   let activeCare = state.caches.care;
   if (!activeCare || !activeCare.length || !careItem) {
-    activeCare = (await readCollection("atendimentos")).filter(item => item.status === "ativo");
+    activeCare = (await readCollection("atendimentos")).filter(item => item.status === "ativo" || item.status === "alta_solicitada");
   }
   if (!activeCare.length) {
     toast("Não há pacientes em atendimento para agendar.", "error");
     return;
   }
+
+  const professionalMap = new Map();
+  activeCare.forEach(item => professionalMap.set(item.profissionalId, { id: item.profissionalId, nome: item.profissionalNome, especialidade: item.especialidade }));
+  const professionals = [...professionalMap.values()].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  const initialProfessionalId = careItem?.profissionalId || (professionals.length === 1 ? professionals[0].id : "");
+
   openDialog({
     title: "Novo agendamento",
-    description: "Escolha um paciente já vinculado a um profissional.",
-    submitLabel: "Agendar atendimento",
+    description: "Primeiro escolha o profissional; depois selecione um paciente da carteira dele.",
+    submitLabel: "Confirmar agendamento",
     body: `<div class="form-grid">
-      <label class="span-2">Paciente e profissional<select name="atendimentoId" required><option value="">Selecione</option>${activeCare.map(item => `<option value="${item.id}" ${careItem?.id === item.id ? "selected" : ""}>${escapeHTML(item.pacienteNome)} — ${escapeHTML(item.profissionalNome)}</option>`).join("")}</select></label>
-      <label>Data<input name="data" type="date" min="${todayISO()}" value="${todayISO()}" required></label>
-      <label>Horário<input name="horario" type="time" required></label>
-      <label class="span-2">Observações<textarea name="observacoes"></textarea></label>
+      <label class="span-2">1. Profissional<select id="appointment-professional" name="profissionalId" required><option value="">Selecione o profissional</option>${professionals.map(item => `<option value="${item.id}" ${item.id === initialProfessionalId ? "selected" : ""}>${escapeHTML(item.nome)} — ${escapeHTML(item.especialidade)}</option>`).join("")}</select></label>
+      <label class="span-2">2. Paciente vinculado<select id="appointment-care" name="atendimentoId" required><option value="">Escolha primeiro o profissional</option></select></label>
+      <label>3. Data<input name="data" type="date" min="${todayISO()}" value="${state.caches.scheduleDate || todayISO()}" required></label>
+      <label>4. Horário<input name="horario" type="time" required></label>
+      <label>Duração prevista<select name="duracaoMinutos"><option value="30">30 minutos</option><option value="45">45 minutos</option><option value="60" selected>1 hora</option><option value="90">1 hora e 30 minutos</option><option value="120">2 horas</option></select></label>
+      <label class="span-2">Observações<textarea name="observacoes" placeholder="Orientações importantes para a recepção ou o profissional"></textarea></label>
+      <div class="info-box span-2">A agenda impede dois pacientes no mesmo horário para o mesmo profissional. Para trocar o profissional responsável pelo paciente, faça a alteração na área “Em atendimento”.</div>
     </div>`,
+    afterOpen: () => {
+      const professionalSelect = document.querySelector("#appointment-professional");
+      const careSelect = document.querySelector("#appointment-care");
+      const updatePatients = () => {
+        const professionalId = professionalSelect.value;
+        const matches = activeCare.filter(item => item.profissionalId === professionalId).sort((a, b) => a.pacienteNome.localeCompare(b.pacienteNome, "pt-BR"));
+        careSelect.innerHTML = `<option value="">Selecione o paciente</option>${matches.map(item => `<option value="${item.id}" ${careItem?.id === item.id ? "selected" : ""}>${escapeHTML(item.pacienteNome)} · ${escapeHTML(item.modalidade || "Presencial")}</option>`).join("")}`;
+        careSelect.disabled = !professionalId;
+      };
+      professionalSelect.addEventListener("change", updatePatients);
+      updatePatients();
+    },
     onSubmit: async formData => {
       const care = activeCare.find(item => item.id === formValue(formData, "atendimentoId"));
-      if (!care) throw new Error("Selecione o paciente.");
+      if (!care) throw new Error("Selecione um paciente vinculado ao profissional.");
       const data = formValue(formData, "data");
       const horario = formValue(formData, "horario");
+      if (data < todayISO()) throw new Error("Não é possível criar um agendamento em uma data passada.");
       const allAppointments = await readCollection("agendamentos");
-      const conflict = allAppointments.some(item => item.profissionalId === care.profissionalId && item.data === data && item.horario === horario && item.status === "agendado");
-      if (conflict) throw new Error("Este profissional já possui um atendimento agendado nesse horário.");
+      const professionalConflict = allAppointments.some(item => item.profissionalId === care.profissionalId && item.data === data && item.horario === horario && item.status === "agendado");
+      if (professionalConflict) throw new Error("Este profissional já possui um atendimento agendado nesse horário.");
+      const patientConflict = allAppointments.some(item => item.pacienteId === care.pacienteId && item.data === data && item.horario === horario && item.status === "agendado");
+      if (patientConflict) throw new Error("Este paciente já possui um atendimento agendado nesse horário.");
       const created = await addDoc(collection(db, "agendamentos"), {
         atendimentoId: care.id,
         pacienteId: care.pacienteId,
@@ -1102,6 +1370,7 @@ async function openAppointmentDialog(careItem = null) {
         modalidade: care.modalidade,
         data,
         horario,
+        duracaoMinutos: Number(formValue(formData, "duracaoMinutos") || 60),
         status: "agendado",
         observacoes: formValue(formData, "observacoes"),
         criadoEm: serverTimestamp(),
@@ -1109,31 +1378,95 @@ async function openAppointmentDialog(careItem = null) {
         atualizadoEm: serverTimestamp(),
         atualizadoPor: state.user.uid
       });
-      await logAction("agendar", "agendamento", created.id, { pacienteNome: care.pacienteNome, data, horario });
+      await logAction("agendar", "agendamento", created.id, { pacienteNome: care.pacienteNome, profissionalNome: care.profissionalNome, data, horario });
+      state.caches.scheduleDate = data;
       toast("Atendimento agendado com sucesso.");
       await renderCurrentPage();
     }
   });
 }
 
-function openAppointmentStatus(item) {
+function openAppointmentEditDialog(item) {
+  if (!item) return;
   openDialog({
-    title: "Atualizar agendamento",
-    description: `${item.pacienteNome} · ${dateToBR(item.data)} às ${item.horario}`,
-    submitLabel: "Salvar situação",
+    title: "Editar agendamento",
+    description: `${item.pacienteNome} · ${item.profissionalNome}`,
+    submitLabel: "Salvar alterações",
     body: `<div class="form-grid">
-      <label>Status<select name="status"><option value="agendado" ${item.status === "agendado" ? "selected" : ""}>Agendado</option><option value="realizado" ${item.status === "realizado" ? "selected" : ""}>Realizado</option><option value="falta" ${item.status === "falta" ? "selected" : ""}>Falta</option><option value="cancelado" ${item.status === "cancelado" ? "selected" : ""}>Cancelado</option></select></label>
+      <div class="info-box span-2"><strong>${escapeHTML(item.pacienteNome)}</strong><br>${escapeHTML(item.profissionalNome)} · ${escapeHTML(item.especialidade || "—")}</div>
+      <label>Data<input name="data" type="date" value="${escapeHTML(item.data)}" required></label>
+      <label>Horário<input name="horario" type="time" value="${escapeHTML(item.horario)}" required></label>
+      <label>Duração prevista<select name="duracaoMinutos"><option value="30" ${Number(item.duracaoMinutos) === 30 ? "selected" : ""}>30 minutos</option><option value="45" ${Number(item.duracaoMinutos) === 45 ? "selected" : ""}>45 minutos</option><option value="60" ${!item.duracaoMinutos || Number(item.duracaoMinutos) === 60 ? "selected" : ""}>1 hora</option><option value="90" ${Number(item.duracaoMinutos) === 90 ? "selected" : ""}>1 hora e 30 minutos</option><option value="120" ${Number(item.duracaoMinutos) === 120 ? "selected" : ""}>2 horas</option></select></label>
+      <label>Situação<select name="status"><option value="agendado" ${item.status === "agendado" ? "selected" : ""}>Agendado</option><option value="realizado" ${item.status === "realizado" ? "selected" : ""}>Realizado</option><option value="falta" ${item.status === "falta" ? "selected" : ""}>Falta</option><option value="cancelado" ${item.status === "cancelado" ? "selected" : ""}>Cancelado</option></select></label>
       <label class="span-2">Observações<textarea name="observacoes">${escapeHTML(item.observacoes || "")}</textarea></label>
     </div>`,
     onSubmit: async formData => {
+      const data = formValue(formData, "data");
+      const horario = formValue(formData, "horario");
+      const allAppointments = await readCollection("agendamentos");
+      const conflict = allAppointments.some(other => other.id !== item.id && other.profissionalId === item.profissionalId && other.data === data && other.horario === horario && other.status === "agendado");
+      if (conflict) throw new Error("Este profissional já possui outro atendimento nesse horário.");
       await updateDoc(doc(db, "agendamentos", item.id), {
+        data,
+        horario,
+        duracaoMinutos: Number(formValue(formData, "duracaoMinutos") || 60),
         status: formValue(formData, "status"),
         observacoes: formValue(formData, "observacoes"),
         atualizadoEm: serverTimestamp(),
         atualizadoPor: state.user.uid
       });
-      await logAction("atualizar_status", "agendamento", item.id, { status: formValue(formData, "status") });
+      await logAction("editar", "agendamento", item.id, { pacienteNome: item.pacienteNome, data, horario });
+      state.caches.scheduleDate = data;
       toast("Agendamento atualizado.");
+      await renderSchedule();
+    }
+  });
+}
+
+function openAppointmentStatus(item) {
+  if (!item) return;
+  openDialog({
+    title: "Registrar presença",
+    description: `${item.pacienteNome} · ${dateToBR(item.data)} às ${item.horario}`,
+    submitLabel: "Salvar situação",
+    body: `<div class="form-grid">
+      <div class="info-box span-2">Use <strong>Realizado</strong> quando o paciente foi atendido e <strong>Falta</strong> quando não compareceu.</div>
+      <label class="span-2">Situação<select name="status"><option value="agendado" ${item.status === "agendado" ? "selected" : ""}>Manter agendado</option><option value="realizado" ${item.status === "realizado" ? "selected" : ""}>Realizado</option><option value="falta" ${item.status === "falta" ? "selected" : ""}>Falta</option><option value="cancelado" ${item.status === "cancelado" ? "selected" : ""}>Cancelado</option></select></label>
+      <label class="span-2">Observações<textarea name="observacoes" placeholder="Anote uma justificativa ou informação do atendimento">${escapeHTML(item.observacoes || "")}</textarea></label>
+    </div>`,
+    onSubmit: async formData => {
+      const status = formValue(formData, "status");
+      await updateDoc(doc(db, "agendamentos", item.id), {
+        status,
+        observacoes: formValue(formData, "observacoes"),
+        atualizadoEm: serverTimestamp(),
+        atualizadoPor: state.user.uid
+      });
+      await logAction("atualizar_status", "agendamento", item.id, { status });
+      toast("Situação do atendimento atualizada.");
+      await renderSchedule();
+    }
+  });
+}
+
+function openCancelAppointmentDialog(item) {
+  if (!item) return;
+  openDialog({
+    title: "Cancelar agendamento",
+    description: `${item.pacienteNome} · ${dateToBR(item.data)} às ${item.horario}`,
+    submitLabel: "Confirmar cancelamento",
+    body: `<div class="form-grid"><div class="info-box span-2">O horário continuará no histórico como cancelado e poderá ser consultado nos relatórios.</div><label class="span-2">Motivo do cancelamento<textarea name="motivo" required placeholder="Informe por que o horário foi cancelado"></textarea></label></div>`,
+    onSubmit: async formData => {
+      const motivo = formValue(formData, "motivo");
+      if (!motivo) throw new Error("Informe o motivo do cancelamento.");
+      await updateDoc(doc(db, "agendamentos", item.id), {
+        status: "cancelado",
+        observacoes: motivo,
+        atualizadoEm: serverTimestamp(),
+        atualizadoPor: state.user.uid
+      });
+      await logAction("cancelar", "agendamento", item.id, { pacienteNome: item.pacienteNome, motivo });
+      toast("Agendamento cancelado.");
       await renderSchedule();
     }
   });
@@ -2120,12 +2453,8 @@ el.pageContent.addEventListener("click", async event => {
     if (action === "archive-patient") return await openArchiveDialog(findCached("care", id));
     if (action === "new-appointment") return await openAppointmentDialog(id ? findCached("care", id) : null);
     if (action === "appointment-status") return openAppointmentStatus(findCached("schedule", id));
-    if (action === "cancel-appointment") {
-      const item = findCached("schedule", id);
-      await updateDoc(doc(db, "agendamentos", id), { status: "cancelado", atualizadoEm: serverTimestamp(), atualizadoPor: state.user.uid });
-      toast("Agendamento cancelado.");
-      return renderSchedule();
-    }
+    if (action === "edit-appointment") return openAppointmentEditDialog(findCached("schedule", id));
+    if (action === "cancel-appointment") return openCancelAppointmentDialog(findCached("schedule", id));
     if (action === "new-professional") return openProfessionalDialog();
     if (action === "edit-professional") return openProfessionalDialog(findCached("professionals", id));
     if (action === "view-professional") return viewProfessional(findCached("professionals", id));
