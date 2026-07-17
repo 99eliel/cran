@@ -825,3 +825,20 @@ td strong { color: var(--text-strong); }
   .archive-pagination { justify-content: space-between; }
   .archive-pagination button { padding-inline: 12px; }
 }
+
+/* Arquivo morto — cadastro manual (v1.6.0) */
+.archive-manual-form { min-width: min(720px, 82vw); }
+.archive-category-field { border: 1px solid rgba(18, 63, 74, .16); border-radius: 14px; padding: 14px 16px 16px; background: #f8fbfa; }
+.archive-category-field legend { padding: 0 7px; font-weight: 800; color: #173f47; }
+.archive-check-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px; margin-top: 4px; }
+.archive-check-grid .checkbox-row { min-height: 34px; padding: 7px 9px; border-radius: 10px; background: #fff; border: 1px solid rgba(18, 63, 74, .1); }
+.archive-check-grid .checkbox-row:has(input:checked) { background: #eaf5f3; border-color: #71aaa7; color: #155d63; }
+
+@media (max-width: 760px) {
+  .archive-manual-form { min-width: 0; }
+  .archive-check-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 480px) {
+  .archive-check-grid { grid-template-columns: 1fr; }
+}

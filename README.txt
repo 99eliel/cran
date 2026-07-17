@@ -1,4 +1,4 @@
-SISTEMA CRAN — VERSÃO 1.5.0
+SISTEMA CRAN — VERSÃO 1.6.0
 Projeto Firebase: cran2026
 
 PRINCIPAIS MÓDULOS
@@ -11,6 +11,16 @@ PRINCIPAIS MÓDULOS
 - Profissionais e usuários.
 - Arquivo morto com restauração de pacientes.
 - PWA instalável e atualização automática.
+
+
+NOVIDADES DA VERSÃO 1.6.0 — CADASTRO MANUAL NO ARQUIVO MORTO
+- Novo botão “Adicionar manualmente” na aba Arquivo morto.
+- Disponível para administrador e recepção.
+- Cadastro de nome, prontuário, data, condição, atendimento, especialidades, telefones, motivo e observações.
+- Suporte às especialidades atuais e às categorias históricas Terapia Ocupacional, Equoterapia e Grupo.
+- Verificação de duplicidade por nome e número do prontuário.
+- Registros manuais recebem origem própria nos filtros e relatórios do arquivo morto.
+- Registros adicionados manualmente podem ser restaurados como cadastro incompleto para atualização.
 
 NOVIDADES DA VERSÃO 1.5.0 — MIGRAÇÃO DO ARQUIVO MORTO
 - Importação privada do cadastro histórico em JSON.

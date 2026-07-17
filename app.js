@@ -23,7 +23,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.6.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -2389,15 +2389,15 @@ async function renderArchive() {
   const specialties = [...new Set(activeArchive.flatMap(item => archiveSpecialties(item)).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
   const legacyCount = activeArchive.filter(archiveIsLegacy).length;
-  const systemCount = activeArchive.length - legacyCount;
-  const withPhone = activeArchive.filter(item => archivePhone(item)).length;
+  const manualCount = activeArchive.filter(archiveIsManual).length;
+  const systemCount = activeArchive.length - legacyCount - manualCount;
 
   el.pageContent.innerHTML = `
     <div class="metric-grid archive-metric-grid">
       ${metricCard("Total arquivado", activeArchive.length, "Registros preservados", "archive", "teal")}
       ${metricCard("Histórico importado", legacyCount, "Cadastro anterior do CRAN", "users", "blue")}
+      ${metricCard("Cadastros manuais", manualCount, "Incluídos diretamente no arquivo morto", "alert", "orange")}
       ${metricCard("Altas do sistema", systemCount, "Concluídos pelo sistema", "heart", "violet")}
-      ${metricCard("Com telefone", withPhone, "Contatos disponíveis", "alert", "orange")}
     </div>
     <div class="page-toolbar archive-toolbar">
       <div class="filters archive-filters">
@@ -2405,6 +2405,7 @@ async function renderArchive() {
         <select id="archive-origin-filter">
           <option value="">Todas as origens</option>
           <option value="legado">Histórico importado</option>
+          <option value="manual">Cadastro manual</option>
           <option value="sistema">Altas do sistema</option>
         </select>
         <select id="archive-specialty-filter">
@@ -2414,7 +2415,8 @@ async function renderArchive() {
       </div>
       <div class="toolbar-actions">
         <button class="secondary-button" type="button" data-action="export-archive">Exportar CSV</button>
-        ${isAdmin() ? `<button class="primary-button" type="button" data-action="import-archive">Importar histórico</button>` : ""}
+        ${isAdmin() ? `<button class="secondary-button" type="button" data-action="import-archive">Importar histórico</button>` : ""}
+        ${canManage() ? `<button class="primary-button" type="button" data-action="manual-archive">+ Adicionar manualmente</button>` : ""}
       </div>
     </div>
     <div class="panel archive-panel" id="archive-panel"></div>`;
@@ -2431,7 +2433,7 @@ async function renderArchive() {
     const filtered = activeArchive.filter(item => {
       const matchesTerm = !term || archiveSearchText(item).includes(term);
       const matchesSpecialty = !specialty || archiveSpecialties(item).includes(specialty);
-      const itemOrigin = archiveIsLegacy(item) ? "legado" : "sistema";
+      const itemOrigin = archiveOriginKey(item);
       return matchesTerm && matchesSpecialty && (!origin || origin === itemOrigin);
     });
     state.caches.archiveFiltered = filtered;
@@ -2455,6 +2457,20 @@ async function renderArchive() {
 
 function archiveIsLegacy(item) {
   return item?.registroLegado === true || item?.origem === "legado_docx";
+}
+
+function archiveIsManual(item) {
+  return item?.registroManual === true || item?.origem === "cadastro_manual";
+}
+
+function archiveNeedsNewPatient(item) {
+  return archiveIsLegacy(item) || archiveIsManual(item);
+}
+
+function archiveOriginKey(item) {
+  if (archiveIsLegacy(item)) return "legado";
+  if (archiveIsManual(item)) return "manual";
+  return "sistema";
 }
 
 function archiveValue(item, key) {
@@ -2493,6 +2509,7 @@ function archiveSearchText(item) {
 
 function archiveOriginLabel(item) {
   if (archiveIsLegacy(item)) return "Histórico importado";
+  if (archiveIsManual(item)) return "Cadastro manual";
   return "Alta do sistema";
 }
 
@@ -2517,7 +2534,9 @@ function archiveTable(items, page = 1, pageSize = 100) {
       const phone = archivePhone(item) || "—";
       const originDetail = archiveIsLegacy(item)
         ? "Cadastro histórico"
-        : `${dateToBR(item.dataConclusao) || "Sem data"}${item.motivo ? ` · ${item.motivo}` : ""}`;
+        : archiveIsManual(item)
+          ? `${dateToBR(item.dataConclusao) || formatTimestamp(item.arquivadoEm, false)}${item.motivo ? ` · ${item.motivo}` : ""}`
+          : `${dateToBR(item.dataConclusao) || "Sem data"}${item.motivo ? ` · ${item.motivo}` : ""}`;
       return `<tr>
         <td><strong class="record-number">${escapeHTML(number)}</strong></td>
         <td><strong>${escapeHTML(item.pacienteNome || archiveValue(item, "nome") || "Sem nome")}</strong>${item.profissionalNome ? `<small>${escapeHTML(item.profissionalNome)}</small>` : ""}</td>
@@ -2542,29 +2561,167 @@ function archiveDetails(item) {
   const attendance = archiveValue(item, "tipoAtendimentoOriginal") || "Não informado";
   const phone = archivePhone(item) || "Não informado";
   const specialties = archiveSpecialties(item);
-  const legacyInfo = archiveIsLegacy(item) ? `
-    <div class="detail-grid archive-detail-grid">
-      <div><span>Prontuário</span><strong>${escapeHTML(number)}</strong></div>
-      <div><span>Origem</span><strong>Cadastro histórico importado</strong></div>
-      <div class="span-2"><span>Patologia / condição</span><strong>${escapeHTML(pathology)}</strong></div>
-      <div class="span-2"><span>Tipo de atendimento original</span><strong>${escapeHTML(attendance)}</strong></div>
-      <div class="span-2"><span>Especialidades identificadas</span><strong>${escapeHTML(specialties.join(" · ") || "Não identificada")}</strong></div>
-      <div class="span-2"><span>Telefone(s)</span><strong>${escapeHTML(phone)}</strong></div>
-    </div>
-    <div class="info-box">Registro migrado do documento histórico de prontuários. O texto original foi preservado nos dados do registro.</div>` : `
-    <div class="detail-grid archive-detail-grid">
-      <div><span>Data de conclusão</span><strong>${escapeHTML(dateToBR(item.dataConclusao) || "Não informada")}</strong></div>
-      <div><span>Motivo</span><strong>${escapeHTML(item.motivo || "Não informado")}</strong></div>
-      <div class="span-2"><span>Profissional</span><strong>${escapeHTML(item.profissionalNome || "Não informado")}</strong></div>
-      <div class="span-2"><span>Observações finais</span><strong>${escapeHTML(item.observacoesFinais || "Sem observações finais")}</strong></div>
-    </div>`;
+  let detailsContent = "";
+
+  if (archiveIsLegacy(item)) {
+    detailsContent = `
+      <div class="detail-grid archive-detail-grid">
+        <div><span>Prontuário</span><strong>${escapeHTML(number)}</strong></div>
+        <div><span>Origem</span><strong>Cadastro histórico importado</strong></div>
+        <div class="span-2"><span>Patologia / condição</span><strong>${escapeHTML(pathology)}</strong></div>
+        <div class="span-2"><span>Tipo de atendimento original</span><strong>${escapeHTML(attendance)}</strong></div>
+        <div class="span-2"><span>Especialidades identificadas</span><strong>${escapeHTML(specialties.join(" · ") || "Não identificada")}</strong></div>
+        <div class="span-2"><span>Telefone(s)</span><strong>${escapeHTML(phone)}</strong></div>
+      </div>
+      <div class="info-box">Registro migrado do documento histórico de prontuários. O texto original foi preservado nos dados do registro.</div>`;
+  } else if (archiveIsManual(item)) {
+    detailsContent = `
+      <div class="detail-grid archive-detail-grid">
+        <div><span>Prontuário</span><strong>${escapeHTML(number)}</strong></div>
+        <div><span>Data do registro</span><strong>${escapeHTML(dateToBR(item.dataConclusao) || formatTimestamp(item.arquivadoEm, false))}</strong></div>
+        <div class="span-2"><span>Patologia / condição</span><strong>${escapeHTML(pathology)}</strong></div>
+        <div class="span-2"><span>Tipo de atendimento original</span><strong>${escapeHTML(attendance)}</strong></div>
+        <div class="span-2"><span>Especialidades / categorias</span><strong>${escapeHTML(specialties.join(" · ") || "Não identificada")}</strong></div>
+        <div class="span-2"><span>Telefone(s)</span><strong>${escapeHTML(phone)}</strong></div>
+        <div class="span-2"><span>Motivo</span><strong>${escapeHTML(item.motivo || "Cadastro manual")}</strong></div>
+        <div class="span-2"><span>Observações</span><strong>${escapeHTML(item.observacoesFinais || "Sem observações")}</strong></div>
+      </div>
+      <div class="info-box">Registro incluído manualmente no arquivo morto por um usuário autorizado do sistema.</div>`;
+  } else {
+    detailsContent = `
+      <div class="detail-grid archive-detail-grid">
+        <div><span>Data de conclusão</span><strong>${escapeHTML(dateToBR(item.dataConclusao) || "Não informada")}</strong></div>
+        <div><span>Motivo</span><strong>${escapeHTML(item.motivo || "Não informado")}</strong></div>
+        <div class="span-2"><span>Profissional</span><strong>${escapeHTML(item.profissionalNome || "Não informado")}</strong></div>
+        <div class="span-2"><span>Observações finais</span><strong>${escapeHTML(item.observacoesFinais || "Sem observações finais")}</strong></div>
+      </div>`;
+  }
 
   openDialog({
     title: item.pacienteNome || archiveValue(item, "nome") || "Registro histórico",
     description: archiveOriginLabel(item),
     submitLabel: "Fechar",
-    body: legacyInfo,
+    body: detailsContent,
     onSubmit: async () => {}
+  });
+}
+
+async function openManualArchiveDialog() {
+  if (!canManage()) throw new Error("Seu usuário não possui permissão para adicionar registros ao arquivo morto.");
+  const categoryOptions = [
+    ...Object.keys(SPECIALTIES),
+    "Terapia Ocupacional",
+    "Equoterapia",
+    "Grupo"
+  ];
+
+  openDialog({
+    title: "Adicionar ao arquivo morto",
+    description: "Cadastro manual de prontuário ou paciente histórico",
+    submitLabel: "Salvar no arquivo morto",
+    body: `<div class="form-grid archive-manual-form">
+      <label>Número do prontuário<input name="numeroProntuario" inputmode="numeric" placeholder="Ex.: 001"></label>
+      <label>Data do registro<input name="dataConclusao" type="date" value="${todayISO()}"></label>
+      <label class="span-2">Nome completo<input name="nome" autocomplete="off" required></label>
+      <label class="span-2">Patologia / condição<input name="patologia" placeholder="Informe a condição registrada"></label>
+      <label class="span-2">Tipo de atendimento original<input name="tipoAtendimentoOriginal" placeholder="Ex.: Fisio / Fono / Psicologia"></label>
+      <fieldset class="span-2 archive-category-field">
+        <legend>Especialidades ou categorias</legend>
+        <div class="archive-check-grid">
+          ${categoryOptions.map(name => `<label class="checkbox-row"><input type="checkbox" name="especialidades" value="${escapeHTML(name)}"> ${escapeHTML(name)}</label>`).join("")}
+        </div>
+      </fieldset>
+      <label class="span-2">Outra especialidade ou categoria<input name="outraEspecialidade" placeholder="Opcional"></label>
+      <label>Telefone principal<input id="archive-manual-phone-1" name="telefone1" inputmode="tel" maxlength="16" placeholder="(64) 99999-9999"></label>
+      <label>Segundo telefone<input id="archive-manual-phone-2" name="telefone2" inputmode="tel" maxlength="16" placeholder="Opcional"></label>
+      <label class="span-2">Motivo do arquivamento<input name="motivo" value="Cadastro manual"></label>
+      <label class="span-2">Observações<textarea name="observacoes" placeholder="Informações adicionais sobre o prontuário"></textarea></label>
+      <div class="info-box span-2">Este registro será salvo diretamente no arquivo morto e poderá ser localizado, exportado e restaurado posteriormente.</div>
+    </div>`,
+    afterOpen: () => {
+      ["#archive-manual-phone-1", "#archive-manual-phone-2"].forEach(selector => {
+        document.querySelector(selector)?.addEventListener("input", event => {
+          event.target.value = formatPhone(event.target.value);
+        });
+      });
+    },
+    onSubmit: async formData => {
+      const nome = formValue(formData, "nome");
+      const numeroProntuario = formValue(formData, "numeroProntuario");
+      const patologia = formValue(formData, "patologia");
+      const tipoAtendimentoOriginal = formValue(formData, "tipoAtendimentoOriginal");
+      const outraEspecialidade = formValue(formData, "outraEspecialidade");
+      const especialidades = [...new Set([
+        ...formData.getAll("especialidades").map(value => String(value).trim()),
+        ...(outraEspecialidade ? [outraEspecialidade] : [])
+      ].filter(Boolean))];
+      const telefones = [...new Set([
+        onlyDigits(formValue(formData, "telefone1")),
+        onlyDigits(formValue(formData, "telefone2"))
+      ].filter(Boolean))];
+      const dataConclusao = formValue(formData, "dataConclusao") || todayISO();
+      const motivo = formValue(formData, "motivo") || "Cadastro manual";
+      const observacoes = formValue(formData, "observacoes");
+
+      if (!nome) throw new Error("Informe o nome do paciente.");
+      if (!numeroProntuario && !patologia && !telefones.length) {
+        throw new Error("Informe ao menos o prontuário, a condição ou um telefone para identificar o registro.");
+      }
+
+      const existingArchive = state.caches.archiveAll || await readCollection("arquivoMorto");
+      if (numeroProntuario && existingArchive.some(item =>
+        item.status === "arquivado"
+        && String(archiveValue(item, "numeroProntuario")).trim() === numeroProntuario
+        && normalize(item.pacienteNome || archiveValue(item, "nome")) === normalize(nome)
+      )) {
+        throw new Error("Já existe um registro arquivado com este prontuário e nome.");
+      }
+
+      const archiveRef = doc(collection(db, "arquivoMorto"));
+      const patientData = {
+        nome,
+        numeroProntuario,
+        patologia,
+        tipoAtendimentoOriginal,
+        especialidade: especialidades[0] || "Não identificado",
+        especialidades,
+        telefone: telefones[0] || "",
+        telefones,
+        observacoes
+      };
+
+      await setDoc(archiveRef, {
+        pacienteId: archiveRef.id,
+        pacienteNome: nome,
+        pacienteNomeBusca: normalize(nome),
+        dadosPaciente: patientData,
+        numeroProntuario,
+        patologia,
+        tipoAtendimentoOriginal,
+        especialidade: especialidades[0] || "Não identificado",
+        especialidades,
+        telefone: telefones[0] || "",
+        telefones,
+        motivo,
+        observacoesFinais: observacoes,
+        dataConclusao,
+        status: "arquivado",
+        origem: "cadastro_manual",
+        registroManual: true,
+        criadoEm: serverTimestamp(),
+        criadoPor: state.user.uid,
+        arquivadoEm: serverTimestamp(),
+        arquivadoPor: state.user.uid
+      });
+
+      delete state.caches.archiveAll;
+      await logAction("adicionar_manual_arquivo_morto", "arquivoMorto", archiveRef.id, {
+        pacienteNome: nome,
+        numeroProntuario
+      });
+      toast("Registro adicionado manualmente ao arquivo morto.");
+      await renderArchive();
+    }
   });
 }
 
@@ -2762,7 +2919,7 @@ async function restorePatient(item) {
       const batch = writeBatch(db);
       const patientId = item.pacienteId || item.id;
       const patientRef = doc(db, "pacientes", patientId);
-      if (archiveIsLegacy(item)) {
+      if (archiveNeedsNewPatient(item)) {
         const data = item.dadosPaciente || {};
         const supportedSpecialty = (data.especialidades || []).find(name => SPECIALTIES[name]) || (SPECIALTIES[data.especialidade] ? data.especialidade : "");
         batch.set(patientRef, {
@@ -2782,7 +2939,8 @@ async function restorePatient(item) {
           criadoEm: serverTimestamp(),
           atualizadoEm: serverTimestamp(),
           atualizadoPor: state.user.uid,
-          restauradoDoLegado: true
+          restauradoDoLegado: archiveIsLegacy(item),
+          restauradoDoArquivoManual: archiveIsManual(item)
         }, { merge: true });
       } else {
         batch.update(patientRef, {
@@ -2842,6 +3000,7 @@ el.pageContent.addEventListener("click", async event => {
     if (action === "reset-user") return await resetUser(findCached("users", id));
     if (action === "archive-details") return archiveDetails(findCached("archive", id));
     if (action === "restore-patient") return await restorePatient(findCached("archive", id));
+    if (action === "manual-archive") return await openManualArchiveDialog();
     if (action === "import-archive") return await openArchiveImportDialog();
     if (action === "export-archive") return exportArchiveCSV();
   } catch (error) {
