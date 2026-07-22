@@ -842,3 +842,5 @@ td strong { color: var(--text-strong); }
 @media (max-width: 480px) {
   .archive-check-grid { grid-template-columns: 1fr; }
 }
+
+.optimization-note{margin:0 0 16px;padding:11px 14px;border:1px solid var(--line,#dce8e5);border-radius:12px;background:#f4faf8;color:#47625f;font-size:.9rem}.optimization-note strong{color:#17685f}

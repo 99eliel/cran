@@ -14,7 +14,13 @@ import {
   doc,
   getDoc,
   getDocs,
+  getCountFromServer,
   query,
+  limit,
+  orderBy,
+  startAfter,
+  startAt,
+  endAt,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -23,7 +29,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.7.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -75,7 +81,9 @@ const state = {
   registration: null,
   remoteVersion: APP_VERSION,
   reportOutput: null,
-  caches: {}
+  caches: {},
+  queryCache: new Map(),
+  archivePager: null
 };
 
 const el = {
@@ -253,13 +261,86 @@ function emptyHTML(title, message) {
   return `<div class="empty-state"><strong>${escapeHTML(title)}</strong>${escapeHTML(message)}</div>`;
 }
 
-async function readCollection(name, constraints = []) {
+const DATA_CACHE_TTL = 2 * 60 * 1000;
+
+function cacheKeyFor(name, key = "") {
+  return key ? `${name}:${key}` : "";
+}
+
+function invalidateDataCache(...prefixes) {
+  for (const key of state.queryCache.keys()) {
+    if (!prefixes.length || prefixes.some(prefix => key.startsWith(prefix))) {
+      state.queryCache.delete(key);
+    }
+  }
+}
+
+async function readCollection(name, constraints = [], options = {}) {
+  const { cacheKey = "", ttl = DATA_CACHE_TTL, force = false } = options;
+  const fullCacheKey = cacheKeyFor(name, cacheKey);
+  const cached = fullCacheKey ? state.queryCache.get(fullCacheKey) : null;
+  if (!force && cached && Date.now() - cached.savedAt < ttl) return cached.data;
+
   const ref = constraints.length
     ? query(collection(db, name), ...constraints)
     : collection(db, name);
   const snapshot = await getDocs(ref);
-  return snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+  const data = snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+  if (fullCacheKey) state.queryCache.set(fullCacheKey, { savedAt: Date.now(), data });
+  return data;
 }
+
+async function readQueryPage(name, constraints = []) {
+  const snapshot = await getDocs(query(collection(db, name), ...constraints));
+  return {
+    items: snapshot.docs.map(item => ({ id: item.id, ...item.data() })),
+    firstDoc: snapshot.docs[0] || null,
+    lastDoc: snapshot.docs.at(-1) || null,
+    size: snapshot.size,
+    docs: snapshot.docs
+  };
+}
+
+async function countCollection(name, constraints = []) {
+  const ref = constraints.length ? query(collection(db, name), ...constraints) : collection(db, name);
+  const snapshot = await getCountFromServer(ref);
+  return snapshot.data().count;
+}
+
+function debounce(fn, wait = 450) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = window.setTimeout(() => fn(...args), wait);
+  };
+}
+
+function startOfDay(value) {
+  if (!value) return null;
+  const date = parseISODate(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function endOfDay(value) {
+  if (!value) return null;
+  const date = parseISODate(value);
+  date.setHours(23, 59, 59, 999);
+  return date;
+}
+
+async function hasAppointmentConflict({ professionalId, patientId, data, horario, excludeId = "" }) {
+  const items = await readCollection("agendamentos", [
+    where("data", "==", data),
+    where("horario", "==", horario),
+    limit(100)
+  ]);
+  return items.some(item => item.id !== excludeId
+    && item.status === "agendado"
+    && (item.profissionalId === professionalId || item.pacienteId === patientId));
+}
+
+
 
 async function getProfile(uid) {
   const snapshot = await getDoc(doc(db, "usuarios", uid));
@@ -400,24 +481,33 @@ async function renderDashboard() {
       el.pageContent.innerHTML = emptyHTML("Usuário sem profissional vinculado", "Peça ao administrador para vincular seu acesso a um profissional.");
       return;
     }
-    const [care, schedule] = await Promise.all([
-      readCollection("atendimentos", [where("profissionalId", "==", professionalId)]),
-      readCollection("agendamentos", [where("profissionalId", "==", professionalId)])
+    const [care, todayCount, upcoming] = await Promise.all([
+      readCollection("atendimentos", [
+        where("profissionalId", "==", professionalId),
+        where("status", "in", ["ativo", "alta_solicitada"])
+      ], { cacheKey: `dashboard-care:${professionalId}`, ttl: 60_000 }),
+      countCollection("agendamentos", [
+        where("profissionalId", "==", professionalId),
+        where("data", "==", todayISO()),
+        where("status", "==", "agendado")
+      ]),
+      readCollection("agendamentos", [
+        where("profissionalId", "==", professionalId),
+        where("data", ">=", todayISO()),
+        where("status", "==", "agendado"),
+        orderBy("data", "asc"),
+        orderBy("horario", "asc"),
+        limit(8)
+      ], { cacheKey: `dashboard-upcoming:${professionalId}:${todayISO()}`, ttl: 60_000 })
     ]);
-    const activeCare = care.filter(item => ["ativo", "alta_solicitada"].includes(item.status));
-    const todayAppointments = schedule.filter(item => item.data === todayISO() && item.status === "agendado");
-    const upcoming = schedule
-      .filter(item => item.data >= todayISO() && item.status === "agendado")
-      .sort((a, b) => `${a.data}${a.horario}`.localeCompare(`${b.data}${b.horario}`))
-      .slice(0, 8);
 
     el.pageContent.innerHTML = `
       ${welcomeBlock({ professional: true })}
       <div class="metric-grid">
-        ${metricCard("Meus pacientes", activeCare.length, "Em acompanhamento", "users", "teal")}
-        ${metricCard("Atendimentos hoje", todayAppointments.length, dateToBR(todayISO()), "calendar", "blue")}
-        ${metricCard("Domiciliares", activeCare.filter(item => item.modalidade === "Domiciliar").length, "Pacientes atribuídos", "home", "orange")}
-        ${metricCard("Alta solicitada", activeCare.filter(item => item.status === "alta_solicitada").length, "Aguardando recepção", "alert", "violet")}
+        ${metricCard("Meus pacientes", care.length, "Em acompanhamento", "users", "teal")}
+        ${metricCard("Atendimentos hoje", todayCount, dateToBR(todayISO()), "calendar", "blue")}
+        ${metricCard("Domiciliares", care.filter(item => item.modalidade === "Domiciliar").length, "Pacientes atribuídos", "home", "orange")}
+        ${metricCard("Alta solicitada", care.filter(item => item.status === "alta_solicitada").length, "Aguardando recepção", "alert", "violet")}
       </div>
       <div class="dashboard-grid">
         <div class="panel">
@@ -426,35 +516,35 @@ async function renderDashboard() {
         </div>
         <div class="panel">
           <div class="panel-header"><div><h3>Resumo da carteira</h3><p>Distribuição dos pacientes atribuídos</p></div></div>
-          ${summaryBySpecialty(activeCare)}
+          ${summaryBySpecialty(care)}
         </div>
       </div>`;
     return;
   }
 
-  const [patients, queueItems, care, schedule, professionals, archive] = await Promise.all([
-    readCollection("pacientes"),
-    readCollection("filaEspera"),
-    readCollection("atendimentos"),
-    readCollection("agendamentos"),
-    readCollection("profissionais"),
-    readCollection("arquivoMorto")
+  const specialtyEntries = await Promise.all(Object.keys(SPECIALTIES).map(async name => [name, await countCollection("filaEspera", [
+    where("status", "==", "aguardando"),
+    where("especialidade", "==", name)
+  ])]));
+  const specialtyCounts = Object.fromEntries(specialtyEntries);
+  const [waiting, urgent, activeCare, todayAppointments, activeProfessionals, archived, activePatients, recentQueue] = await Promise.all([
+    countCollection("filaEspera", [where("status", "==", "aguardando")]),
+    countCollection("filaEspera", [where("status", "==", "aguardando"), where("classificacao", "==", "Urgência")]),
+    countCollection("atendimentos", [where("status", "in", ["ativo", "alta_solicitada"])]),
+    countCollection("agendamentos", [where("data", "==", todayISO()), where("status", "==", "agendado")]),
+    countCollection("profissionais", [where("ativo", "==", true)]),
+    countCollection("arquivoMorto", [where("status", "==", "arquivado")]),
+    countCollection("pacientes", [where("status", "!=", "arquivo_morto")]),
+    readCollection("filaEspera", [where("status", "==", "aguardando"), orderBy("dataEntrada", "desc"), limit(7)], { cacheKey: "dashboard-recent-queue", ttl: 60_000 })
   ]);
-  const waiting = queueItems.filter(item => item.status === "aguardando");
-  const activeCare = care.filter(item => ["ativo", "alta_solicitada"].includes(item.status));
-  const todayAppointments = schedule.filter(item => item.data === todayISO() && item.status === "agendado");
-  const urgent = waiting.filter(item => item.classificacao === "Urgência");
-  const recentQueue = [...waiting]
-    .sort((a, b) => (timestampToDate(b.dataEntrada)?.getTime() || 0) - (timestampToDate(a.dataEntrada)?.getTime() || 0))
-    .slice(0, 7);
 
   el.pageContent.innerHTML = `
     ${welcomeBlock()}
     <div class="metric-grid">
-      ${metricCard("Fila de espera", waiting.length, `${urgent.length} urgência(s)`, "queue", "orange")}
-      ${metricCard("Em atendimento", activeCare.length, "Pacientes vinculados", "heart", "teal")}
-      ${metricCard("Agenda de hoje", todayAppointments.length, dateToBR(todayISO()), "calendar", "blue")}
-      ${metricCard("Profissionais ativos", professionals.filter(item => item.ativo !== false).length, `${archive.filter(item => item.status === "arquivado").length} no arquivo morto`, "users", "violet")}
+      ${metricCard("Fila de espera", waiting, `${urgent} urgência(s)`, "queue", "orange")}
+      ${metricCard("Em atendimento", activeCare, "Pacientes vinculados", "heart", "teal")}
+      ${metricCard("Agenda de hoje", todayAppointments, dateToBR(todayISO()), "calendar", "blue")}
+      ${metricCard("Profissionais ativos", activeProfessionals, `${archived.toLocaleString("pt-BR")} no arquivo morto`, "users", "violet")}
     </div>
     <div class="dashboard-grid">
       <div class="panel">
@@ -462,15 +552,17 @@ async function renderDashboard() {
         ${recentQueue.length ? queueTable(recentQueue, false) : emptyHTML("Fila vazia", "Não há pacientes aguardando atendimento.")}
       </div>
       <div class="panel">
-        <div class="panel-header"><div><h3>Fila por especialidade</h3><p>Quantidade atual de pacientes</p></div></div>
-        ${summaryBySpecialty(waiting)}
+        <div class="panel-header"><div><h3>Fila por especialidade</h3><p>Contagem feita sem baixar todos os cadastros</p></div></div>
+        ${summaryBySpecialtyCounts(specialtyCounts)}
       </div>
     </div>
     <div class="panel">
-      <div class="panel-header"><div><h3>Situação dos cadastros</h3><p>${patients.filter(p => p.status !== "arquivo_morto").length} pacientes ativos cadastrados</p></div></div>
-      <div class="info-box">A recepção encaminha manualmente cada paciente da fila, escolhe o profissional responsável e o paciente passa a aparecer imediatamente no painel desse profissional.</div>
+      <div class="panel-header"><div><h3>Situação dos cadastros</h3><p>${activePatients.toLocaleString("pt-BR")} pacientes ativos cadastrados</p></div></div>
+      <div class="info-box">Os indicadores usam contagens do Firestore e as telas volumosas carregam apenas o trecho necessário.</div>
     </div>`;
 }
+
+
 
 function metricCard(label, value, note, icon = "heart", variant = "teal") {
   return `<article class="metric-card ${escapeHTML(variant)}">
@@ -501,6 +593,20 @@ function summaryBySpecialty(items) {
   `).join("")}</div>`;
 }
 
+function summaryBySpecialtyCounts(counts = {}) {
+  const rows = Object.keys(SPECIALTIES).map(name => ({ name, count: Number(counts[name] || 0) }));
+  const max = Math.max(1, ...rows.map(item => item.count));
+  return `<div class="specialty-summary">${rows.map(item => `
+    <div class="specialty-row">
+      <div class="specialty-symbol">${escapeHTML(item.name.slice(0, 2).toUpperCase())}</div>
+      <div class="specialty-meta">
+        <strong>${escapeHTML(item.name)}</strong>
+        <small class="specialty-bar"><i style="width:${Math.max(item.count ? 12 : 0, Math.round((item.count / max) * 100))}%"></i></small>
+      </div>
+      <div class="specialty-count">${item.count}</div>
+    </div>`).join("")}</div>`;
+}
+
 async function renderPatients() {
   let patients;
   if (isProfessional()) {
@@ -508,9 +614,9 @@ async function renderPatients() {
       el.pageContent.innerHTML = emptyHTML("Acesso não vinculado", "Seu usuário ainda não está vinculado a um profissional.");
       return;
     }
-    patients = await readCollection("pacientes", [where("profissionalId", "==", state.profile.profissionalId)]);
+    patients = await readCollection("pacientes", [where("profissionalId", "==", state.profile.profissionalId)], { cacheKey: `list-professional:${state.profile.profissionalId}`, ttl: 60_000 });
   } else {
-    patients = await readCollection("pacientes");
+    patients = await readCollection("pacientes", [], { cacheKey: "list-management", ttl: 60_000 });
   }
   patients = patients.filter(item => item.status !== "arquivo_morto");
   state.caches.patients = patients;
@@ -606,10 +712,11 @@ function openPatientDialog(patient = null) {
       if (isEdit) {
         await updateDoc(doc(db, "pacientes", patient.id), payload);
         await logAction("editar", "paciente", patient.id, { nome: payload.nome });
+        invalidateDataCache("pacientes:");
         toast("Paciente atualizado com sucesso.");
       } else {
-        const existing = await readCollection("pacientes");
-        if (existing.some(item => item.cpf === payload.cpf && item.status !== "arquivo_morto")) {
+        const existing = await readCollection("pacientes", [where("cpf", "==", payload.cpf), limit(5)]);
+        if (existing.some(item => item.status !== "arquivo_morto")) {
           throw new Error("Já existe um paciente ativo cadastrado com este CPF.");
         }
         const created = await addDoc(collection(db, "pacientes"), {
@@ -619,6 +726,7 @@ function openPatientDialog(patient = null) {
           criadoPor: state.user.uid
         });
         await logAction("criar", "paciente", created.id, { nome: payload.nome });
+        invalidateDataCache("pacientes:");
         toast("Paciente cadastrado com sucesso.");
       }
       await renderPatients();
@@ -642,8 +750,8 @@ function viewPatient(patient) {
 }
 
 async function openQueueDialog(patient) {
-  const queueItems = await readCollection("filaEspera");
-  if (queueItems.some(item => item.pacienteId === patient.id && item.status === "aguardando")) {
+  const queueItems = await readCollection("filaEspera", [where("pacienteId", "==", patient.id), limit(10)]);
+  if (queueItems.some(item => item.status === "aguardando")) {
     toast("Este paciente já está na fila de espera.", "error");
     return;
   }
@@ -666,6 +774,7 @@ async function openQueueDialog(patient) {
       const created = await addDoc(collection(db, "filaEspera"), {
         pacienteId: patient.id,
         pacienteNome: patient.nome,
+        pacienteNomeBusca: normalize(patient.nome),
         pacienteCpf: patient.cpf,
         telefone: patient.telefone,
         especialidade: formValue(formData, "especialidade"),
@@ -683,6 +792,7 @@ async function openQueueDialog(patient) {
         atualizadoPor: state.user.uid
       });
       await logAction("adicionar_fila", "filaEspera", created.id, { pacienteId: patient.id, pacienteNome: patient.nome });
+      invalidateDataCache("pacientes:", "filaEspera:");
       toast("Paciente incluído na fila de espera.");
       await renderPatients();
     }
@@ -690,7 +800,7 @@ async function openQueueDialog(patient) {
 }
 
 async function renderQueue() {
-  const items = (await readCollection("filaEspera")).filter(item => item.status === "aguardando");
+  const items = await readCollection("filaEspera", [where("status", "==", "aguardando")], { cacheKey: "waiting-list", ttl: 45_000 });
   state.caches.queue = items;
   el.pageContent.innerHTML = `
     <div class="page-toolbar">
@@ -741,8 +851,7 @@ function queueTable(items, actions = true) {
 }
 
 async function openReferralDialog(queueItem) {
-  const professionals = (await readCollection("profissionais"))
-    .filter(item => item.ativo !== false && item.especialidade === queueItem.especialidade);
+  const professionals = await readCollection("profissionais", [where("ativo", "==", true), where("especialidade", "==", queueItem.especialidade)], { cacheKey: `active-specialty:${queueItem.especialidade}`, ttl: 5 * 60_000 });
   if (!professionals.length) {
     toast(`Não há profissional ativo cadastrado em ${queueItem.especialidade}.`, "error");
     return;
@@ -766,11 +875,13 @@ async function openReferralDialog(queueItem) {
       batch.set(careRef, {
         pacienteId: queueItem.pacienteId,
         pacienteNome: queueItem.pacienteNome,
+        pacienteNomeBusca: normalize(queueItem.pacienteNome),
         pacienteCpf: queueItem.pacienteCpf,
         telefone: queueItem.telefone || "",
         filaId: queueItem.id,
         profissionalId: professional.id,
         profissionalNome: professional.nome,
+        profissionalNomeBusca: normalize(professional.nome),
         especialidade: queueItem.especialidade,
         tipoAtendimento: queueItem.tipoAtendimento,
         classificacao: queueItem.classificacao,
@@ -802,6 +913,7 @@ async function openReferralDialog(queueItem) {
       });
       await batch.commit();
       await logAction("encaminhar", "atendimento", careRef.id, { pacienteNome: queueItem.pacienteNome, profissionalNome: professional.nome });
+      invalidateDataCache("pacientes:", "filaEspera:", "atendimentos:", "agendamentos:");
       toast("Paciente vinculado ao profissional com sucesso.");
       await renderQueue();
     }
@@ -829,6 +941,7 @@ async function removeFromQueue(queueItem) {
       });
       await batch.commit();
       await logAction("retirar_fila", "filaEspera", queueItem.id, { pacienteNome: queueItem.pacienteNome });
+      invalidateDataCache("pacientes:", "filaEspera:");
       toast("Paciente retirado da fila.");
       await renderQueue();
     }
@@ -842,9 +955,9 @@ async function renderCare() {
       el.pageContent.innerHTML = emptyHTML("Acesso não vinculado", "Seu usuário ainda não está vinculado a um profissional.");
       return;
     }
-    care = await readCollection("atendimentos", [where("profissionalId", "==", state.profile.profissionalId)]);
+    care = await readCollection("atendimentos", [where("profissionalId", "==", state.profile.profissionalId), where("status", "in", ["ativo", "alta_solicitada"])], { cacheKey: `active-professional:${state.profile.profissionalId}`, ttl: 45_000 });
   } else {
-    care = await readCollection("atendimentos");
+    care = await readCollection("atendimentos", [where("status", "in", ["ativo", "alta_solicitada"])], { cacheKey: "active-management", ttl: 45_000 });
   }
   care = care.filter(item => ["ativo", "alta_solicitada"].includes(item.status));
   state.caches.care = care;
@@ -926,6 +1039,7 @@ function openCareNote(item) {
         atualizadoPor: state.user.uid
       });
       await logAction("anotar", "atendimento", item.id, { pacienteNome: item.pacienteNome });
+      invalidateDataCache("atendimentos:");
       toast("Observação atualizada.");
       await renderCare();
     }
@@ -939,6 +1053,7 @@ async function requestDischarge(item) {
     atualizadoPor: state.user.uid
   });
   await logAction("solicitar_alta", "atendimento", item.id, { pacienteNome: item.pacienteNome });
+  invalidateDataCache("atendimentos:");
   toast("Solicitação de alta enviada à recepção.");
   await renderCare();
 }
@@ -959,7 +1074,7 @@ async function openArchiveDialog(item) {
     </div>`,
     onSubmit: async formData => {
       const archiveRef = doc(collection(db, "arquivoMorto"));
-      const appointments = await readCollection("agendamentos");
+      const appointments = await readCollection("agendamentos", [where("pacienteId", "==", patient.id), where("status", "==", "agendado"), limit(100)]);
       const batch = writeBatch(db);
       batch.set(archiveRef, {
         pacienteId: patient.id,
@@ -1012,6 +1127,7 @@ async function openArchiveDialog(item) {
       await batch.commit();
       delete state.caches.archiveAll;
       await logAction("arquivar", "arquivoMorto", archiveRef.id, { pacienteNome: patient.nome });
+      invalidateDataCache("pacientes:", "atendimentos:", "agendamentos:", "arquivoMorto:");
       toast("Paciente enviado ao arquivo morto.");
       await renderCare();
     }
@@ -1019,22 +1135,17 @@ async function openArchiveDialog(item) {
 }
 
 async function renderSchedule() {
-  let appointments;
-  if (isProfessional()) {
-    if (!state.profile.profissionalId) {
-      el.pageContent.innerHTML = emptyHTML("Acesso não vinculado", "Seu usuário ainda não está vinculado a um profissional.");
-      return;
-    }
-    appointments = await readCollection("agendamentos", [where("profissionalId", "==", state.profile.profissionalId)]);
-  } else {
-    appointments = await readCollection("agendamentos");
+  if (isProfessional() && !state.profile.profissionalId) {
+    el.pageContent.innerHTML = emptyHTML("Acesso não vinculado", "Seu usuário ainda não está vinculado a um profissional.");
+    return;
   }
 
   const professionals = canManage()
-    ? (await readCollection("profissionais")).filter(item => item.ativo !== false).sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"))
+    ? (await readCollection("profissionais", [where("ativo", "==", true), orderBy("nomeBusca", "asc")], { cacheKey: "active-professionals", ttl: 5 * 60_000 }))
     : [];
 
-  state.caches.schedule = appointments;
+  let appointments = [];
+  let loadedKey = "";
   let selectedDate = state.caches.scheduleDate || todayISO();
   let currentView = state.caches.scheduleView || "day";
 
@@ -1045,10 +1156,7 @@ async function renderSchedule() {
         <button id="schedule-today" class="secondary-button" type="button">Hoje</button>
         <button id="schedule-next" class="schedule-nav-button" type="button" aria-label="Próximo período">›</button>
         <input id="schedule-date" class="schedule-date-input" type="date" value="${selectedDate}">
-        <div>
-          <strong id="schedule-range-title" class="schedule-range-title"></strong>
-          <small id="schedule-range-subtitle" class="schedule-range-subtitle"></small>
-        </div>
+        <div><strong id="schedule-range-title" class="schedule-range-title"></strong><small id="schedule-range-subtitle" class="schedule-range-subtitle"></small></div>
       </div>
       <div class="schedule-command-actions">
         <div class="schedule-view-switch" aria-label="Visualização da agenda">
@@ -1059,7 +1167,6 @@ async function renderSchedule() {
         ${canManage() ? `<button class="primary-button" data-action="new-appointment">+ Novo agendamento</button>` : ""}
       </div>
     </section>
-
     <section class="schedule-filter-bar">
       ${canManage() ? `<label>Profissional<select id="schedule-professional-filter"><option value="">Todos os profissionais</option>${professionals.map(item => `<option value="${item.id}">${escapeHTML(item.nome)} — ${escapeHTML(item.especialidade)}</option>`).join("")}</select></label>` : ""}
       <label>Especialidade<select id="schedule-specialty-filter"><option value="">Todas as especialidades</option>${specialtyOptions()}</select></label>
@@ -1067,7 +1174,7 @@ async function renderSchedule() {
       <label class="schedule-search-label">Buscar<input id="schedule-search" type="search" placeholder="Paciente ou profissional"></label>
       <button id="schedule-clear-filters" class="secondary-button" type="button">Limpar filtros</button>
     </section>
-
+    <div class="optimization-note">Carregamento econômico: somente o dia, semana ou mês exibido é consultado no Firebase.</div>
     <div id="schedule-metrics" class="metric-grid schedule-metrics"></div>
     <div id="schedule-panel"></div>`;
 
@@ -1083,32 +1190,37 @@ async function renderSchedule() {
     subtitle: document.querySelector("#schedule-range-subtitle")
   };
 
+  async function loadRange(range, force = false) {
+    const selectedProfessional = isProfessional() ? state.profile.profissionalId : (controls.professional?.value || "");
+    const key = `${selectedProfessional || "all"}:${range.start}:${range.end}`;
+    if (!force && key === loadedKey) return;
+    controls.panel.innerHTML = loadingHTML("Carregando somente o período selecionado...");
+    const constraints = [];
+    if (selectedProfessional) constraints.push(where("profissionalId", "==", selectedProfessional));
+    constraints.push(where("data", ">=", range.start), where("data", "<=", range.end), orderBy("data", "asc"), orderBy("horario", "asc"));
+    appointments = await readCollection("agendamentos", constraints, { cacheKey: `schedule:${key}`, ttl: 60_000, force });
+    state.caches.schedule = appointments;
+    loadedKey = key;
+  }
+
   const filteredAppointments = () => {
-    const professionalId = controls.professional?.value || "";
     const specialty = controls.specialty.value;
     const status = controls.status.value;
     const term = normalize(controls.search.value);
-    return appointments.filter(item =>
-      (!professionalId || item.profissionalId === professionalId)
-      && (!specialty || item.especialidade === specialty)
+    return appointments.filter(item => (!specialty || item.especialidade === specialty)
       && (!status || item.status === status)
-      && (!term || normalize(`${item.pacienteNome} ${item.profissionalNome} ${item.especialidade} ${item.observacoes || ""}`).includes(term))
-    );
+      && (!term || normalize(`${item.pacienteNome} ${item.profissionalNome} ${item.especialidade} ${item.observacoes || ""}`).includes(term)));
   };
 
-  const apply = () => {
+  async function apply(force = false) {
     state.caches.scheduleDate = selectedDate;
     state.caches.scheduleView = currentView;
     controls.date.value = selectedDate;
-    document.querySelectorAll("[data-schedule-view]").forEach(button => {
-      button.classList.toggle("active", button.dataset.scheduleView === currentView);
-    });
-
+    document.querySelectorAll("[data-schedule-view]").forEach(button => button.classList.toggle("active", button.dataset.scheduleView === currentView));
     const range = scheduleDateRange(currentView, selectedDate);
-    const base = filteredAppointments();
-    const periodItems = base.filter(item => item.data >= range.start && item.data <= range.end);
+    await loadRange(range, force);
+    const periodItems = filteredAppointments();
     const counts = scheduleStatusCounts(periodItems);
-
     controls.title.textContent = range.title;
     controls.subtitle.textContent = range.subtitle;
     controls.metrics.innerHTML = `
@@ -1116,58 +1228,37 @@ async function renderSchedule() {
       ${metricCard("Realizados", counts.realizado, "Atendimentos concluídos", "heart", "teal")}
       ${metricCard("Faltas", counts.falta, "Pacientes que não compareceram", "alert", "orange")}
       ${metricCard("Cancelados", counts.cancelado, "Horários cancelados", "queue", "violet")}`;
+    if (currentView === "week") controls.panel.innerHTML = scheduleWeekView(periodItems, range.start);
+    else if (currentView === "list") controls.panel.innerHTML = scheduleListView(periodItems);
+    else controls.panel.innerHTML = scheduleDayView(periodItems, selectedDate);
+    controls.panel.querySelectorAll("[data-schedule-open]").forEach(button => button.addEventListener("click", async () => {
+      selectedDate = button.dataset.scheduleOpen;
+      currentView = "day";
+      loadedKey = "";
+      await apply();
+    }));
+  }
 
-    if (currentView === "week") {
-      controls.panel.innerHTML = scheduleWeekView(periodItems, range.start);
-    } else if (currentView === "list") {
-      controls.panel.innerHTML = scheduleListView(periodItems);
-    } else {
-      controls.panel.innerHTML = scheduleDayView(periodItems, selectedDate);
-    }
-
-    controls.panel.querySelectorAll("[data-schedule-open]").forEach(button => {
-      button.addEventListener("click", () => {
-        selectedDate = button.dataset.scheduleOpen;
-        currentView = "day";
-        apply();
-      });
-    });
-  };
-
-  document.querySelector("#schedule-prev").addEventListener("click", () => {
-    selectedDate = scheduleMoveDate(selectedDate, currentView, -1);
-    apply();
-  });
-  document.querySelector("#schedule-next").addEventListener("click", () => {
-    selectedDate = scheduleMoveDate(selectedDate, currentView, 1);
-    apply();
-  });
-  document.querySelector("#schedule-today").addEventListener("click", () => {
-    selectedDate = todayISO();
-    apply();
-  });
-  controls.date.addEventListener("change", () => {
-    selectedDate = controls.date.value || todayISO();
-    apply();
-  });
-  document.querySelectorAll("[data-schedule-view]").forEach(button => {
-    button.addEventListener("click", () => {
-      currentView = button.dataset.scheduleView;
-      apply();
-    });
-  });
-  [controls.professional, controls.specialty, controls.status].filter(Boolean).forEach(control => control.addEventListener("change", apply));
-  controls.search.addEventListener("input", apply);
-  document.querySelector("#schedule-clear-filters").addEventListener("click", () => {
+  document.querySelector("#schedule-prev").addEventListener("click", async () => { selectedDate = scheduleMoveDate(selectedDate, currentView, -1); loadedKey = ""; await apply(); });
+  document.querySelector("#schedule-next").addEventListener("click", async () => { selectedDate = scheduleMoveDate(selectedDate, currentView, 1); loadedKey = ""; await apply(); });
+  document.querySelector("#schedule-today").addEventListener("click", async () => { selectedDate = todayISO(); loadedKey = ""; await apply(); });
+  controls.date.addEventListener("change", async () => { selectedDate = controls.date.value || todayISO(); loadedKey = ""; await apply(); });
+  document.querySelectorAll("[data-schedule-view]").forEach(button => button.addEventListener("click", async () => { currentView = button.dataset.scheduleView; loadedKey = ""; await apply(); }));
+  controls.professional?.addEventListener("change", async () => { loadedKey = ""; await apply(); });
+  [controls.specialty, controls.status].forEach(control => control.addEventListener("change", () => apply()));
+  controls.search.addEventListener("input", debounce(() => apply(), 250));
+  document.querySelector("#schedule-clear-filters").addEventListener("click", async () => {
     if (controls.professional) controls.professional.value = "";
     controls.specialty.value = "";
     controls.status.value = "";
     controls.search.value = "";
-    apply();
+    loadedKey = "";
+    await apply();
   });
-
-  apply();
+  await apply();
 }
+
+
 
 function parseISODate(value) {
   const [year, month, day] = String(value || todayISO()).split("-").map(Number);
@@ -1366,11 +1457,9 @@ async function openAppointmentDialog(careItem = null) {
       const data = formValue(formData, "data");
       const horario = formValue(formData, "horario");
       if (data < todayISO()) throw new Error("Não é possível criar um agendamento em uma data passada.");
-      const allAppointments = await readCollection("agendamentos");
-      const professionalConflict = allAppointments.some(item => item.profissionalId === care.profissionalId && item.data === data && item.horario === horario && item.status === "agendado");
-      if (professionalConflict) throw new Error("Este profissional já possui um atendimento agendado nesse horário.");
-      const patientConflict = allAppointments.some(item => item.pacienteId === care.pacienteId && item.data === data && item.horario === horario && item.status === "agendado");
-      if (patientConflict) throw new Error("Este paciente já possui um atendimento agendado nesse horário.");
+      if (await hasAppointmentConflict({ professionalId: care.profissionalId, patientId: care.pacienteId, data, horario })) {
+        throw new Error("O profissional ou o paciente já possui um atendimento agendado nesse horário.");
+      }
       const created = await addDoc(collection(db, "agendamentos"), {
         atendimentoId: care.id,
         pacienteId: care.pacienteId,
@@ -1391,6 +1480,7 @@ async function openAppointmentDialog(careItem = null) {
       });
       await logAction("agendar", "agendamento", created.id, { pacienteNome: care.pacienteNome, profissionalNome: care.profissionalNome, data, horario });
       state.caches.scheduleDate = data;
+      invalidateDataCache("agendamentos:schedule:");
       toast("Atendimento agendado com sucesso.");
       await renderCurrentPage();
     }
@@ -1414,9 +1504,9 @@ function openAppointmentEditDialog(item) {
     onSubmit: async formData => {
       const data = formValue(formData, "data");
       const horario = formValue(formData, "horario");
-      const allAppointments = await readCollection("agendamentos");
-      const conflict = allAppointments.some(other => other.id !== item.id && other.profissionalId === item.profissionalId && other.data === data && other.horario === horario && other.status === "agendado");
-      if (conflict) throw new Error("Este profissional já possui outro atendimento nesse horário.");
+      if (await hasAppointmentConflict({ professionalId: item.profissionalId, patientId: item.pacienteId, data, horario, excludeId: item.id })) {
+        throw new Error("O profissional ou o paciente já possui outro atendimento nesse horário.");
+      }
       await updateDoc(doc(db, "agendamentos", item.id), {
         data,
         horario,
@@ -1428,6 +1518,7 @@ function openAppointmentEditDialog(item) {
       });
       await logAction("editar", "agendamento", item.id, { pacienteNome: item.pacienteNome, data, horario });
       state.caches.scheduleDate = data;
+      invalidateDataCache("agendamentos:schedule:");
       toast("Agendamento atualizado.");
       await renderSchedule();
     }
@@ -1454,6 +1545,7 @@ function openAppointmentStatus(item) {
         atualizadoPor: state.user.uid
       });
       await logAction("atualizar_status", "agendamento", item.id, { status });
+      invalidateDataCache("agendamentos:schedule:");
       toast("Situação do atendimento atualizada.");
       await renderSchedule();
     }
@@ -1477,6 +1569,7 @@ function openCancelAppointmentDialog(item) {
         atualizadoPor: state.user.uid
       });
       await logAction("cancelar", "agendamento", item.id, { pacienteNome: item.pacienteNome, motivo });
+      invalidateDataCache("agendamentos:schedule:");
       toast("Agendamento cancelado.");
       await renderSchedule();
     }
@@ -2090,94 +2183,125 @@ function printReport() {
   popup.document.close();
 }
 
+
+async function loadReportData(type, filters) {
+  const data = { patients: [], queue: [], care: [], appointments: [], professionals: [], archive: [] };
+  const needs = {
+    geral: ["patients", "queue", "care", "appointments", "archive"],
+    fila_atual: ["queue"], tempo_espera: ["queue"], historico_fila: ["queue"],
+    pacientes_ativos: ["patients"], atendimentos: ["care"], agenda: ["appointments"],
+    produtividade: ["appointments", "care", "professionals"], ausencias: ["appointments"],
+    altas: ["archive"], domiciliares: ["queue", "care"],
+    especialidades: ["patients", "queue", "care", "appointments", "archive"],
+    carteiras: ["care", "professionals"]
+  }[type] || ["patients", "queue", "care", "appointments", "archive"];
+
+  if (needs.includes("professionals")) {
+    data.professionals = await readCollection("profissionais", [], { cacheKey: "reports-professionals", ttl: 5 * 60_000 });
+  }
+  if (needs.includes("patients")) {
+    const constraints = [where("status", "!=", "arquivo_morto")];
+    data.patients = await readCollection("pacientes", constraints, { cacheKey: `reports-patients:${filters.specialty || "all"}`, ttl: 2 * 60_000 });
+  }
+  if (needs.includes("queue")) {
+    const constraints = [];
+    if (["geral", "fila_atual", "tempo_espera", "domiciliares", "especialidades"].includes(type)) constraints.push(where("status", "==", "aguardando"));
+    if (type === "historico_fila" && filters.start) constraints.push(where("dataEntrada", ">=", startOfDay(filters.start)));
+    if (type === "historico_fila" && filters.end) constraints.push(where("dataEntrada", "<=", endOfDay(filters.end)));
+    data.queue = await readCollection("filaEspera", constraints, { cacheKey: `reports-queue:${type}:${filters.start}:${filters.end}:${filters.specialty}`, ttl: 60_000 });
+  }
+  if (needs.includes("care")) {
+    const constraints = [where("status", "in", ["ativo", "alta_solicitada"] )];
+    data.care = await readCollection("atendimentos", constraints, { cacheKey: `reports-care:${filters.professionalId}:${filters.specialty}`, ttl: 60_000 });
+  }
+  if (needs.includes("appointments")) {
+    const constraints = [];
+    if (filters.start) constraints.push(where("data", ">=", filters.start));
+    if (filters.end) constraints.push(where("data", "<=", filters.end));
+    if (filters.start || filters.end) constraints.push(orderBy("data", "asc"));
+    data.appointments = await readCollection("agendamentos", constraints, { cacheKey: `reports-appts:${filters.start}:${filters.end}:${filters.professionalId}:${filters.specialty}`, ttl: 60_000 });
+  }
+  if (needs.includes("archive")) {
+    const constraints = [];
+    // Registros históricos antigos não possuem dataConclusao e são naturalmente excluídos quando há período.
+    if (filters.start) constraints.push(where("dataConclusao", ">=", filters.start));
+    if (filters.end) constraints.push(where("dataConclusao", "<=", filters.end));
+    data.archive = await readCollection("arquivoMorto", constraints, { cacheKey: `reports-archive:${type}:${filters.start}:${filters.end}:${filters.specialty}`, ttl: 60_000 });
+  }
+  if (!data.professionals.length && ["produtividade", "carteiras"].includes(type)) {
+    data.professionals = await readCollection("profissionais", [], { cacheKey: "reports-professionals", ttl: 5 * 60_000 });
+  }
+  return data;
+}
+
 async function renderReports() {
   if (!canManage()) {
     el.pageContent.innerHTML = emptyHTML("Acesso restrito", "Os relatórios gerenciais estão disponíveis para administração e recepção.");
     return;
   }
-  const [patients, queueItems, care, appointments, professionals, archive] = await Promise.all([
-    readCollection("pacientes"),
-    readCollection("filaEspera"),
-    readCollection("atendimentos"),
-    readCollection("agendamentos"),
-    readCollection("profissionais"),
-    readCollection("arquivoMorto")
-  ]);
-  const data = { patients, queue: queueItems, care, appointments, professionals, archive };
-  state.caches.reportData = data;
-  const professionalOptions = professionals
-    .filter(item => item.ativo !== false)
-    .sort((a, b) => String(a.nome).localeCompare(String(b.nome)))
-    .map(item => `<option value="${item.id}">${escapeHTML(item.nome)} — ${escapeHTML(item.especialidade)}</option>`)
-    .join("");
+  const professionals = await readCollection("profissionais", [where("ativo", "==", true)], { cacheKey: "reports-professionals", ttl: 5 * 60_000 });
+  const professionalOptions = professionals.sort((a, b) => String(a.nome).localeCompare(String(b.nome))).map(item => `<option value="${item.id}">${escapeHTML(item.nome)} — ${escapeHTML(item.especialidade)}</option>`).join("");
+  const now = new Date();
+  const monthStart = dateToISO(new Date(now.getFullYear(), now.getMonth(), 1));
+  const monthEnd = dateToISO(new Date(now.getFullYear(), now.getMonth() + 1, 0));
 
   el.pageContent.innerHTML = `
-    <section class="reports-hero">
-      <div>
-        <span class="eyebrow">Central de indicadores</span>
-        <h2>Relatórios completos do CRAN</h2>
-        <p>Combine filtros, visualize indicadores, exporte para Excel ou use a impressão para salvar em PDF.</p>
-      </div>
-      <div class="report-quick-periods">
-        <button type="button" data-report-period="month">Este mês</button>
-        <button type="button" data-report-period="last_month">Mês anterior</button>
-        <button type="button" data-report-period="year">Este ano</button>
-        <button type="button" data-report-period="all">Todo período</button>
-      </div>
-    </section>
-    <section class="panel report-control-panel">
-      <div class="report-filter-grid">
-        <label class="report-type-field">Tipo de relatório<select id="report-type">${reportTypeOptions()}</select></label>
-        <label>Data inicial<input id="report-start" type="date"></label>
-        <label>Data final<input id="report-end" type="date"></label>
-        <label>Especialidade<select id="report-specialty"><option value="">Todas</option>${specialtyOptions()}</select></label>
-        <label>Profissional<select id="report-professional"><option value="">Todos</option>${professionalOptions}</select></label>
-        <label>Classificação<select id="report-classification"><option value="">Todas</option>${classificationOptions()}</select></label>
-        <label>Status<select id="report-status"><option value="">Todos</option>${reportStatusOptions()}</select></label>
-        <label>Modalidade<select id="report-modality"><option value="">Todas</option><option>Presencial</option><option>Domiciliar</option></select></label>
-        <label class="report-search-field">Paciente, profissional ou observação<input id="report-search" type="search" placeholder="Digite para refinar o relatório"></label>
-      </div>
-      <div class="report-control-actions">
-        <button id="report-clear" class="secondary-button" type="button">Limpar filtros</button>
-        <button id="report-generate" class="primary-button" type="button">Gerar relatório</button>
-      </div>
-    </section>
-    <div class="report-export-bar">
-      <div><strong>Resultado do relatório</strong><span>Os dados abaixo refletem os filtros selecionados.</span></div>
-      <div>
-        <button id="report-export" class="secondary-button" type="button" disabled>Exportar para Excel (CSV)</button>
-        <button id="report-print" class="primary-button" type="button" disabled>Imprimir / Salvar PDF</button>
-      </div>
-    </div>
-    <div id="report-output">${loadingHTML("Gerando relatório inicial...")}</div>`;
+    <section class="reports-hero"><div><span class="eyebrow">Central de indicadores</span><h2>Relatórios completos do CRAN</h2><p>Os dados só são consultados quando você clicar em “Gerar relatório”.</p></div><div class="report-quick-periods"><button type="button" data-report-period="month">Este mês</button><button type="button" data-report-period="last_month">Mês anterior</button><button type="button" data-report-period="year">Este ano</button><button type="button" data-report-period="all">Todo período</button></div></section>
+    <section class="panel report-control-panel"><div class="report-filter-grid">
+      <label class="report-type-field">Tipo de relatório<select id="report-type">${reportTypeOptions()}</select></label>
+      <label>Data inicial<input id="report-start" type="date" value="${monthStart}"></label><label>Data final<input id="report-end" type="date" value="${monthEnd}"></label>
+      <label>Especialidade<select id="report-specialty"><option value="">Todas</option>${specialtyOptions()}</select></label>
+      <label>Profissional<select id="report-professional"><option value="">Todos</option>${professionalOptions}</select></label>
+      <label>Classificação<select id="report-classification"><option value="">Todas</option>${classificationOptions()}</select></label>
+      <label>Status<select id="report-status"><option value="">Todos</option>${reportStatusOptions()}</select></label>
+      <label>Modalidade<select id="report-modality"><option value="">Todas</option><option>Presencial</option><option>Domiciliar</option></select></label>
+      <label class="report-search-field">Paciente, profissional ou observação<input id="report-search" type="search" placeholder="Digite para refinar o relatório"></label>
+    </div><div class="report-control-actions"><button id="report-clear" class="secondary-button" type="button">Limpar filtros</button><button id="report-generate" class="primary-button" type="button">Gerar relatório</button></div></section>
+    <div class="optimization-note"><strong>Economia de leituras:</strong> o período padrão é o mês atual e somente as coleções necessárias ao relatório escolhido são carregadas. “Todo período” pode consumir mais leituras.</div>
+    <div class="report-export-bar"><div><strong>Resultado do relatório</strong><span>Nenhuma consulta pesada é feita antes da geração.</span></div><div><button id="report-export" class="secondary-button" type="button" disabled>Exportar para Excel (CSV)</button><button id="report-print" class="primary-button" type="button" disabled>Imprimir / Salvar PDF</button></div></div>
+    <div id="report-output">${emptyHTML("Escolha os filtros", "Clique em Gerar relatório para consultar somente os dados necessários.")}</div>`;
 
-  const generate = () => {
-    const filters = getReportFilters(data);
-    if (filters.start && filters.end && filters.start > filters.end) {
-      toast("A data inicial não pode ser posterior à data final.", "error");
-      return;
+  async function generate() {
+    const shellData = { professionals };
+    const filters = getReportFilters(shellData);
+    if (filters.start && filters.end && filters.start > filters.end) return toast("A data inicial não pode ser posterior à data final.", "error");
+    const output = document.querySelector("#report-output");
+    const button = document.querySelector("#report-generate");
+    button.disabled = true; button.textContent = "Consultando...";
+    output.innerHTML = loadingHTML("Consultando somente os dados necessários...");
+    try {
+      const data = await loadReportData(filters.type, filters);
+      data.professionals = data.professionals.length ? data.professionals : professionals;
+      renderReportOutput(buildReport(data, filters));
+    } catch (error) {
+      console.error(error);
+      output.innerHTML = emptyHTML("Não foi possível gerar", authErrorMessage(error));
+      toast(authErrorMessage(error), "error");
+    } finally {
+      button.disabled = false; button.textContent = "Gerar relatório";
     }
-    renderReportOutput(buildReport(data, filters));
-  };
+  }
 
-  document.querySelectorAll("[data-report-period]").forEach(button => button.addEventListener("click", () => {
-    setReportPeriod(button.dataset.reportPeriod);
-    generate();
-  }));
+  document.querySelectorAll("[data-report-period]").forEach(button => button.addEventListener("click", () => setReportPeriod(button.dataset.reportPeriod)));
   document.querySelector("#report-generate").addEventListener("click", generate);
   document.querySelector("#report-export").addEventListener("click", exportReportCSV);
   document.querySelector("#report-print").addEventListener("click", printReport);
   document.querySelector("#report-clear").addEventListener("click", () => {
     document.querySelector("#report-type").value = "geral";
-    ["#report-start", "#report-end", "#report-specialty", "#report-professional", "#report-classification", "#report-status", "#report-modality", "#report-search"].forEach(selector => document.querySelector(selector).value = "");
-    generate();
+    ["#report-specialty", "#report-professional", "#report-classification", "#report-status", "#report-modality", "#report-search"].forEach(selector => document.querySelector(selector).value = "");
+    document.querySelector("#report-start").value = monthStart;
+    document.querySelector("#report-end").value = monthEnd;
+    state.reportOutput = null;
+    document.querySelector("#report-export").disabled = true;
+    document.querySelector("#report-print").disabled = true;
+    document.querySelector("#report-output").innerHTML = emptyHTML("Filtros limpos", "Clique em Gerar relatório quando estiver pronto.");
   });
-  document.querySelector("#report-type").addEventListener("change", generate);
-  generate();
 }
 
+
+
 async function renderProfessionals() {
-  const professionals = await readCollection("profissionais");
+  const professionals = await readCollection("profissionais", [], { cacheKey: "list", ttl: 5 * 60_000 });
   state.caches.professionals = professionals;
   el.pageContent.innerHTML = `
     <div class="page-toolbar">
@@ -2249,6 +2373,7 @@ function openProfessionalDialog(item = null) {
       if (isEdit) {
         await updateDoc(doc(db, "profissionais", item.id), payload);
         await logAction("editar", "profissional", item.id, { nome: payload.nome });
+        invalidateDataCache("profissionais:");
         toast("Profissional atualizado.");
       } else {
         const created = await addDoc(collection(db, "profissionais"), {
@@ -2258,6 +2383,7 @@ function openProfessionalDialog(item = null) {
           criadoPor: state.user.uid
         });
         await logAction("criar", "profissional", created.id, { nome: payload.nome });
+        invalidateDataCache("profissionais:");
         toast("Profissional cadastrado.");
       }
       await renderProfessionals();
@@ -2282,12 +2408,13 @@ async function toggleProfessional(item) {
     atualizadoEm: serverTimestamp(),
     atualizadoPor: state.user.uid
   });
+  invalidateDataCache("profissionais:");
   toast(active ? "Profissional ativado." : "Profissional inativado.");
   await renderProfessionals();
 }
 
 async function renderUsers() {
-  const [users, professionals] = await Promise.all([readCollection("usuarios"), readCollection("profissionais")]);
+  const [users, professionals] = await Promise.all([readCollection("usuarios", [], { cacheKey: "list", ttl: 5 * 60_000 }), readCollection("profissionais", [], { cacheKey: "list", ttl: 5 * 60_000 })]);
   state.caches.users = users;
   state.caches.professionals = professionals;
   el.pageContent.innerHTML = `
@@ -2358,6 +2485,7 @@ function openUserDialog() {
         }
         await signOut(secondaryAuth);
         await logAction("criar", "usuario", credential.user.uid, { perfil, nome: formValue(formData, "nome") });
+        invalidateDataCache("usuarios:", "profissionais:");
         toast("Usuário criado com sucesso.");
       } finally {
         await deleteApp(secondaryApp).catch(() => {});
@@ -2371,6 +2499,7 @@ async function toggleUser(item) {
   const active = item.ativo === false;
   await updateDoc(doc(db, "usuarios", item.id), { ativo: active });
   await logAction(active ? "ativar" : "desativar", "usuario", item.id, { nome: item.nome });
+  invalidateDataCache("usuarios:");
   toast(active ? "Usuário ativado." : "Usuário desativado.");
   await renderUsers();
 }
@@ -2381,79 +2510,103 @@ async function resetUser(item) {
 }
 
 async function renderArchive() {
-  const archive = state.caches.archiveAll || await readCollection("arquivoMorto");
-  state.caches.archiveAll = archive;
-  const activeArchive = archive.filter(item => item.status === "arquivado");
-  state.caches.archive = activeArchive;
-
-  const specialties = [...new Set(activeArchive.flatMap(item => archiveSpecialties(item)).filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b, "pt-BR"));
-  const legacyCount = activeArchive.filter(archiveIsLegacy).length;
-  const manualCount = activeArchive.filter(archiveIsManual).length;
-  const systemCount = activeArchive.length - legacyCount - manualCount;
+  const pageSize = 50;
+  const fixedSpecialties = [...Object.keys(SPECIALTIES), "Terapia Ocupacional", "Equoterapia", "Grupo", "Não identificado"];
+  const [total, legacyCount, manualCount] = await Promise.all([
+    countCollection("arquivoMorto", [where("status", "==", "arquivado")]),
+    countCollection("arquivoMorto", [where("status", "==", "arquivado"), where("origem", "==", "legado_docx")]),
+    countCollection("arquivoMorto", [where("status", "==", "arquivado"), where("origem", "==", "cadastro_manual")])
+  ]);
+  const systemCount = Math.max(0, total - legacyCount - manualCount);
 
   el.pageContent.innerHTML = `
     <div class="metric-grid archive-metric-grid">
-      ${metricCard("Total arquivado", activeArchive.length, "Registros preservados", "archive", "teal")}
-      ${metricCard("Histórico importado", legacyCount, "Cadastro anterior do CRAN", "users", "blue")}
-      ${metricCard("Cadastros manuais", manualCount, "Incluídos diretamente no arquivo morto", "alert", "orange")}
-      ${metricCard("Altas do sistema", systemCount, "Concluídos pelo sistema", "heart", "violet")}
+      ${metricCard("Total arquivado", total.toLocaleString("pt-BR"), "Contagem sem baixar os registros", "archive", "teal")}
+      ${metricCard("Histórico importado", legacyCount.toLocaleString("pt-BR"), "Cadastro anterior do CRAN", "users", "blue")}
+      ${metricCard("Cadastros manuais", manualCount.toLocaleString("pt-BR"), "Incluídos diretamente", "alert", "orange")}
+      ${metricCard("Altas do sistema", systemCount.toLocaleString("pt-BR"), "Concluídos pelo sistema", "heart", "violet")}
     </div>
     <div class="page-toolbar archive-toolbar">
       <div class="filters archive-filters">
-        <input id="archive-search" type="search" placeholder="Buscar nome, prontuário, condição ou telefone">
-        <select id="archive-origin-filter">
-          <option value="">Todas as origens</option>
-          <option value="legado">Histórico importado</option>
-          <option value="manual">Cadastro manual</option>
-          <option value="sistema">Altas do sistema</option>
-        </select>
-        <select id="archive-specialty-filter">
-          <option value="">Todas as especialidades</option>
-          ${specialties.map(name => `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}
-        </select>
+        <input id="archive-search" type="search" placeholder="Nome, prontuário ou telefone">
+        <select id="archive-origin-filter"><option value="">Todas as origens</option><option value="legado_docx">Histórico importado</option><option value="cadastro_manual">Cadastro manual</option><option value="sistema">Altas do sistema</option></select>
+        <select id="archive-specialty-filter"><option value="">Todas as especialidades</option>${fixedSpecialties.map(name => `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("")}</select>
       </div>
       <div class="toolbar-actions">
-        <button class="secondary-button" type="button" data-action="export-archive">Exportar CSV</button>
+        <button class="secondary-button" type="button" data-action="export-archive">Exportar página CSV</button>
         ${isAdmin() ? `<button class="secondary-button" type="button" data-action="import-archive">Importar histórico</button>` : ""}
         ${canManage() ? `<button class="primary-button" type="button" data-action="manual-archive">+ Adicionar manualmente</button>` : ""}
       </div>
     </div>
-    <div class="panel archive-panel" id="archive-panel"></div>`;
+    <div class="optimization-note"><strong>Leituras reduzidas:</strong> o arquivo morto carrega somente 50 registros por vez. A busca é feita no servidor por início do nome, prontuário exato ou telefone exato.</div>
+    <div class="panel archive-panel" id="archive-panel">${loadingHTML("Carregando a primeira página...")}</div>`;
 
-  let currentPage = 1;
-  const pageSize = 100;
   const panel = document.querySelector("#archive-panel");
+  const searchInput = document.querySelector("#archive-search");
+  const originInput = document.querySelector("#archive-origin-filter");
+  const specialtyInput = document.querySelector("#archive-specialty-filter");
+  let page = 1;
+  let cursors = [null];
+  let currentItems = [];
 
-  const apply = (resetPage = true) => {
-    if (resetPage) currentPage = 1;
-    const term = normalize(document.querySelector("#archive-search").value);
-    const specialty = document.querySelector("#archive-specialty-filter").value;
-    const origin = document.querySelector("#archive-origin-filter").value;
-    const filtered = activeArchive.filter(item => {
-      const matchesTerm = !term || archiveSearchText(item).includes(term);
-      const matchesSpecialty = !specialty || archiveSpecialties(item).includes(specialty);
-      const itemOrigin = archiveOriginKey(item);
-      return matchesTerm && matchesSpecialty && (!origin || origin === itemOrigin);
-    });
-    state.caches.archiveFiltered = filtered;
-    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-    currentPage = Math.min(currentPage, totalPages);
-    panel.innerHTML = archiveTable(filtered, currentPage, pageSize);
-  };
+  function buildConstraints(cursor = null, withLimit = true) {
+    const termRaw = searchInput.value.trim();
+    const term = normalize(termRaw);
+    const digits = onlyDigits(termRaw);
+    const constraints = [where("status", "==", "arquivado")];
+    const numericSearch = Boolean(termRaw && digits.length);
+    // Para buscas numéricas, evitamos combinar dois filtros array-contains, algo não suportado pelo Firestore.
+    if (!numericSearch && originInput.value) constraints.push(where("origem", "==", originInput.value));
+    if (!numericSearch && specialtyInput.value) constraints.push(where("especialidades", "array-contains", specialtyInput.value));
 
-  document.querySelector("#archive-search").addEventListener("input", () => apply(true));
-  document.querySelector("#archive-specialty-filter").addEventListener("change", () => apply(true));
-  document.querySelector("#archive-origin-filter").addEventListener("change", () => apply(true));
-  panel.addEventListener("click", event => {
-    const pageButton = event.target.closest("[data-archive-page]");
-    if (!pageButton) return;
-    currentPage = Number(pageButton.dataset.archivePage || 1);
-    apply(false);
+    if (termRaw) {
+      if (digits.length >= 8) constraints.push(where("telefones", "array-contains", digits));
+      else if (digits.length) constraints.push(where("numeroProntuario", "==", termRaw));
+      else constraints.push(orderBy("pacienteNomeBusca", "asc"), startAt(term), endAt(`${term}\uf8ff`));
+    } else {
+      constraints.push(orderBy("pacienteNomeBusca", "asc"));
+    }
+    if (cursor) constraints.push(startAfter(cursor));
+    if (withLimit) constraints.push(limit(pageSize + 1));
+    return constraints;
+  }
+
+  async function loadPage(reset = false) {
+    if (reset) { page = 1; cursors = [null]; }
+    panel.innerHTML = loadingHTML("Buscando somente os registros desta página...");
+    const cursor = cursors[page - 1] || null;
+    const [result, count] = await Promise.all([
+      readQueryPage("arquivoMorto", buildConstraints(cursor, true)),
+      countCollection("arquivoMorto", buildConstraints(null, false))
+    ]);
+    const hasNext = result.items.length > pageSize;
+    currentItems = result.items.slice(0, pageSize);
+    if (searchInput.value.trim() && onlyDigits(searchInput.value).length) {
+      currentItems = currentItems.filter(item => (!originInput.value || item.origem === originInput.value)
+        && (!specialtyInput.value || archiveSpecialties(item).includes(specialtyInput.value)));
+    }
+    state.caches.archive = currentItems;
+    state.caches.archiveFiltered = currentItems;
+    if (hasNext) cursors[page] = result.docs[pageSize - 1];
+    panel.innerHTML = archiveTable(currentItems, page, pageSize, count, hasNext);
+  }
+
+  const resetAndLoad = debounce(() => loadPage(true).catch(error => { console.error(error); panel.innerHTML = emptyHTML("Não foi possível carregar", authErrorMessage(error)); }), 500);
+  searchInput.addEventListener("input", resetAndLoad);
+  originInput.addEventListener("change", () => loadPage(true));
+  specialtyInput.addEventListener("change", () => loadPage(true));
+  panel.addEventListener("click", async event => {
+    const button = event.target.closest("[data-archive-nav]");
+    if (!button) return;
+    if (button.dataset.archiveNav === "next") page += 1;
+    else page = Math.max(1, page - 1);
+    await loadPage(false);
     panel.scrollIntoView({ behavior: "smooth", block: "start" });
   });
-  apply(true);
+  await loadPage(true);
 }
+
+
 
 function archiveIsLegacy(item) {
   return item?.registroLegado === true || item?.origem === "legado_docx";
@@ -2513,30 +2666,24 @@ function archiveOriginLabel(item) {
   return "Alta do sistema";
 }
 
-function archiveTable(items, page = 1, pageSize = 100) {
+function archiveTable(items, page = 1, pageSize = 50, totalCount = items.length, hasNext = false) {
   if (!items.length) return emptyHTML("Nenhum registro encontrado", "Altere os filtros ou importe o arquivo histórico.");
-  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
-  const safePage = Math.min(Math.max(1, page), totalPages);
-  const start = (safePage - 1) * pageSize;
-  const pageItems = items.slice(start, start + pageSize);
-
+  const start = (page - 1) * pageSize;
   return `<div class="archive-result-heading">
-      <div><strong>${items.length.toLocaleString("pt-BR")} registros</strong><span>Exibindo ${start + 1}–${Math.min(start + pageSize, items.length)}</span></div>
-      <small>Página ${safePage} de ${totalPages}</small>
+      <div><strong>${Number(totalCount).toLocaleString("pt-BR")} registros</strong><span>Exibindo ${start + 1}–${start + items.length}</span></div>
+      <small>Página ${page}</small>
     </div>
     <div class="table-wrap"><table class="archive-table"><thead><tr>
       <th>Prontuário</th><th>Paciente</th><th>Condição / atendimento</th><th>Especialidade</th><th>Telefone</th><th>Origem</th><th>Ações</th>
-    </tr></thead><tbody>${pageItems.map(item => {
+    </tr></thead><tbody>${items.map(item => {
       const number = archiveValue(item, "numeroProntuario") || "—";
       const pathology = archiveValue(item, "patologia") || "Condição não informada";
       const attendance = archiveValue(item, "tipoAtendimentoOriginal");
       const specialties = archiveSpecialties(item);
       const phone = archivePhone(item) || "—";
-      const originDetail = archiveIsLegacy(item)
-        ? "Cadastro histórico"
-        : archiveIsManual(item)
-          ? `${dateToBR(item.dataConclusao) || formatTimestamp(item.arquivadoEm, false)}${item.motivo ? ` · ${item.motivo}` : ""}`
-          : `${dateToBR(item.dataConclusao) || "Sem data"}${item.motivo ? ` · ${item.motivo}` : ""}`;
+      const originDetail = archiveIsLegacy(item) ? "Cadastro histórico" : archiveIsManual(item)
+        ? `${dateToBR(item.dataConclusao) || formatTimestamp(item.arquivadoEm, false)}${item.motivo ? ` · ${item.motivo}` : ""}`
+        : `${dateToBR(item.dataConclusao) || "Sem data"}${item.motivo ? ` · ${item.motivo}` : ""}`;
       return `<tr>
         <td><strong class="record-number">${escapeHTML(number)}</strong></td>
         <td><strong>${escapeHTML(item.pacienteNome || archiveValue(item, "nome") || "Sem nome")}</strong>${item.profissionalNome ? `<small>${escapeHTML(item.profissionalNome)}</small>` : ""}</td>
@@ -2547,12 +2694,14 @@ function archiveTable(items, page = 1, pageSize = 100) {
         <td><div class="actions-cell"><button class="table-button" data-action="archive-details" data-id="${item.id}">Ver</button><button class="table-button primary" data-action="restore-patient" data-id="${item.id}">Restaurar</button></div></td>
       </tr>`;
     }).join("")}</tbody></table></div>
-    ${totalPages > 1 ? `<div class="archive-pagination">
-      <button class="secondary-button" type="button" data-archive-page="${Math.max(1, safePage - 1)}" ${safePage === 1 ? "disabled" : ""}>← Anterior</button>
-      <span>${safePage} / ${totalPages}</span>
-      <button class="secondary-button" type="button" data-archive-page="${Math.min(totalPages, safePage + 1)}" ${safePage === totalPages ? "disabled" : ""}>Próxima →</button>
-    </div>` : ""}`;
+    <div class="archive-pagination">
+      <button class="secondary-button" type="button" data-archive-nav="prev" ${page === 1 ? "disabled" : ""}>← Anterior</button>
+      <span>Página ${page}</span>
+      <button class="secondary-button" type="button" data-archive-nav="next" ${!hasNext ? "disabled" : ""}>Próxima →</button>
+    </div>`;
 }
+
+
 
 function archiveDetails(item) {
   if (!item) return;
@@ -2668,12 +2817,11 @@ async function openManualArchiveDialog() {
         throw new Error("Informe ao menos o prontuário, a condição ou um telefone para identificar o registro.");
       }
 
-      const existingArchive = state.caches.archiveAll || await readCollection("arquivoMorto");
-      if (numeroProntuario && existingArchive.some(item =>
-        item.status === "arquivado"
-        && String(archiveValue(item, "numeroProntuario")).trim() === numeroProntuario
-        && normalize(item.pacienteNome || archiveValue(item, "nome")) === normalize(nome)
-      )) {
+      const existingArchive = numeroProntuario
+        ? await readCollection("arquivoMorto", [where("numeroProntuario", "==", numeroProntuario), limit(20)])
+        : [];
+      if (numeroProntuario && existingArchive.some(item => item.status === "arquivado"
+        && normalize(item.pacienteNome || archiveValue(item, "nome")) === normalize(nome))) {
         throw new Error("Já existe um registro arquivado com este prontuário e nome.");
       }
 
@@ -2719,6 +2867,7 @@ async function openManualArchiveDialog() {
         pacienteNome: nome,
         numeroProntuario
       });
+      invalidateDataCache("arquivoMorto:");
       toast("Registro adicionado manualmente ao arquivo morto.");
       await renderArchive();
     }
@@ -2792,18 +2941,19 @@ async function openArchiveImportDialog() {
       const progressDetail = document.querySelector("#archive-import-progress-detail");
       progress.classList.remove("hidden");
 
-      progressLabel.textContent = "Verificando registros existentes...";
-      const existingArchive = state.caches.archiveAll || await readCollection("arquivoMorto");
-      const existingIds = new Set(existingArchive.map(item => item.id));
-      const pending = selectedPayload.records.filter(item => !existingIds.has(item.legacyId));
-      if (!pending.length) {
+      progressLabel.textContent = "Verificando o marcador da migração...";
+      const datasetKey = String(selectedPayload.datasetId || "cran-arquivo-morto").replace(/[^a-zA-Z0-9_-]/g, "_");
+      const migrationRef = doc(db, "configuracoes", `migracao_${datasetKey}`);
+      const migrationSnapshot = await getDoc(migrationRef);
+      if (migrationSnapshot.exists() && migrationSnapshot.data().concluida === true) {
         progressBar.value = 100;
         progressValue.textContent = "100%";
         progressLabel.textContent = "Arquivo já importado";
-        progressDetail.textContent = "Nenhum registro novo foi encontrado.";
-        toast("Todos os registros desse arquivo já estão no sistema.");
+        progressDetail.textContent = "A verificação exigiu apenas uma leitura de controle.";
+        toast("Este conjunto de dados já foi importado.");
         return;
       }
+      const pending = selectedPayload.records;
 
       const batchSize = 400;
       let imported = 0;
@@ -2864,7 +3014,14 @@ async function openArchiveImportDialog() {
         progressDetail.textContent = `Lote ${Math.ceil(imported / batchSize)} de ${Math.ceil(pending.length / batchSize)} concluído.`;
       }
 
-      delete state.caches.archiveAll;
+      await setDoc(migrationRef, {
+        concluida: true,
+        datasetId: selectedPayload.datasetId || "cran-arquivo-morto",
+        registrosImportados: imported,
+        concluidaEm: serverTimestamp(),
+        concluidaPor: state.user.uid
+      }, { merge: true });
+      invalidateDataCache("arquivoMorto:");
       await logAction("importar_arquivo_morto", "arquivoMorto", selectedPayload.datasetId || "legado", {
         registrosImportados: imported,
         registrosIgnorados: selectedPayload.records.length - pending.length,
@@ -2958,6 +3115,7 @@ async function restorePatient(item) {
       await batch.commit();
       delete state.caches.archiveAll;
       await logAction("restaurar", "arquivoMorto", item.id, { pacienteNome: item.pacienteNome });
+      invalidateDataCache("arquivoMorto:", "pacientes:");
       toast("Paciente restaurado para os cadastros ativos.");
       await renderArchive();
     }
@@ -3066,7 +3224,7 @@ document.querySelector("#menu-toggle").addEventListener("click", () => {
   el.sidebarOverlay.classList.toggle("show");
 });
 el.sidebarOverlay.addEventListener("click", closeSidebar);
-el.refreshButton.addEventListener("click", renderCurrentPage);
+el.refreshButton.addEventListener("click", () => { invalidateDataCache(); state.caches = {}; renderCurrentPage(); });
 el.nav.addEventListener("click", event => {
   const button = event.target.closest("[data-page]");
   if (button && !button.classList.contains("hidden")) setPage(button.dataset.page);
@@ -3127,7 +3285,7 @@ el.installButton.addEventListener("click", async () => {
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   try {
-    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.2.2");
+    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.7.0");
     if (state.registration.waiting) el.updateBanner.classList.remove("hidden");
     state.registration.addEventListener("updatefound", () => {
       const worker = state.registration.installing;
