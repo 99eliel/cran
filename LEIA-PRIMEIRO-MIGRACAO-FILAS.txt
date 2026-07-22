@@ -1,0 +1,22 @@
+SISTEMA CRAN v2.0.0 — MIGRAÇÃO DAS FILAS COM CONDIÇÕES
+
+ARQUIVO CORRETO
+fila-espera-cran-2026-condicoes-organizadas.json
+
+RESULTADO DO TRATAMENTO
+- 798 pacientes consolidados.
+- 897 entradas aguardando.
+- 43 desistentes ou encaminhados externamente ficam fora da fila ativa.
+- Condições clínicas foram retiradas do nome e gravadas em campos próprios.
+
+LÓGICA
+- Urgência, Prioritário e Eletivo: classificação.
+- Pós-operatório, AVC e Respiratório: tipo de atendimento da Fisioterapia.
+- Domiciliar: modalidade.
+- Infantil e Adulto: tipo de atendimento da Psicologia.
+- Fratura, Laser, Lesão, Gestante, Laqueadura e Vasectomia: observações complementares.
+
+SEGURANÇA
+- IDs fixos evitam duplicidade ao retomar.
+- Se a versão antiga já foi importada, a v2 atualiza as condições sem reabrir pacientes já encaminhados.
+- O JSON é privado e não deve ir para GitHub ou Hosting.

@@ -1,0 +1,17 @@
+SISTEMA CRAN v2.0.0 — FILA INTELIGENTE E CORREÇÕES
+
+PRINCIPAIS ALTERAÇÕES
+- As condições escritas junto ao nome foram separadas em campos próprios.
+- Urgência, Prioritário e Eletivo são classificações.
+- Pós-operatório, AVC e Respiratório são tipos da Fisioterapia.
+- Domiciliar é modalidade.
+- A fila ganhou filtro e etiquetas visuais por condição.
+- Agora é possível editar o paciente diretamente na fila.
+- O botão Cancelar e o X do encaminhamento foram corrigidos.
+- Datas ausentes ficam no final da listagem.
+
+MIGRAÇÃO
+Use somente o arquivo:
+fila-espera-cran-2026-condicoes-organizadas.json
+
+Ele não deve ser colocado no GitHub ou no Firebase Hosting.

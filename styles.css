@@ -846,7 +846,7 @@ td strong { color: var(--text-strong); }
 .optimization-note{margin:0 0 16px;padding:11px 14px;border:1px solid var(--line,#dce8e5);border-radius:12px;background:#f4faf8;color:#47625f;font-size:.9rem}.optimization-note strong{color:#17685f}
 
 
-/* Migração das filas de espera — v1.9.0 */
+/* Migração das filas de espera — v2.0.0 */
 .migration-hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
@@ -904,4 +904,22 @@ td strong { color: var(--text-strong); }
   .migration-hero { padding: 18px; }
   .migration-preview-numbers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .migration-import-layout { min-width: 0; }
+}
+
+
+/* Fila inteligente — condições clínicas e edição */
+.condition-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 145px; }
+.condition-tags .badge { margin: 0; }
+.badge.pos_operatorio { color: #7c3aed; background: #ede9fe; }
+.badge.avc { color: #1d4ed8; background: #dbeafe; }
+.badge.respiratorio { color: #0369a1; background: #e0f2fe; }
+.badge.domiciliar { color: #b45309; background: #fef3c7; }
+.badge.infantil, .badge.adulto { color: #0f766e; background: #ccfbf1; }
+.badge.geral, .badge.nao_informado { color: #586a6d; background: #edf2f1; }
+.queue-urgent-row { background: #fff8f7; }
+.queue-urgent-row td:first-child { box-shadow: inset 4px 0 0 var(--danger); }
+.info-box .condition-tags { display: inline-flex; margin-left: 6px; vertical-align: middle; }
+@media (max-width: 880px) {
+  .condition-tags { min-width: 0; }
+  .actions-cell .table-button { flex: 1 1 auto; }
 }

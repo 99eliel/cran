@@ -29,7 +29,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.9.0";
+const APP_VERSION = "2.0.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -59,7 +59,21 @@ const SPECIALTIES = {
 };
 
 const CLASSIFICATIONS = ["Urgência", "Prioritário", "Eletivo", "Não se aplica", "Não informado"];
-const WAITING_LIST_MIGRATION_ID = "cran_filas_espera_2026_v1";
+const WAITING_LIST_MIGRATION_ID = "cran_filas_espera_2026_v2_condicoes";
+const LEGACY_WAITING_LIST_MIGRATION_ID = "cran_filas_espera_2026_v1";
+const QUEUE_CONDITIONS = [
+  "Urgência",
+  "Prioritário",
+  "Eletivo",
+  "Pós-operatório",
+  "AVC",
+  "Respiratório",
+  "Domiciliar",
+  "Infantil",
+  "Adulto",
+  "Geral",
+  "Não informado"
+];
 const ROLE_NAMES = {
   admin: "Administrador",
   recepcao: "Recepção",
@@ -255,8 +269,8 @@ function authErrorMessage(error) {
     "auth/weak-password": "A senha deve ter pelo menos 6 caracteres.",
     "auth/invalid-email": "Informe um e-mail válido.",
     "permission-denied": "Você não tem permissão para realizar esta ação.",
-    "failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 1.9.0 e limpe o cache do navegador.",
-    "firestore/failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 1.9.0 e limpe o cache do navegador."
+    "failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 2.0.0 e limpe o cache do navegador.",
+    "firestore/failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 2.0.0 e limpe o cache do navegador."
   };
   return messages[error?.code] || error?.message || "Não foi possível concluir a operação.";
 }
@@ -451,7 +465,7 @@ function openDialog({ title, description = "", body, submitLabel = "Salvar", onS
 }
 
 function closeDialog() {
-  if (el.dialog.open) el.dialog.close();
+  if (el.dialog.open) el.dialog.close("cancel");
   dialogHandler = null;
   dialogAfterOpen = null;
 }
@@ -466,6 +480,45 @@ function specialtyOptions(selected = "") {
 
 function classificationOptions(selected = "") {
   return CLASSIFICATIONS.map(name => `<option value="${escapeHTML(name)}" ${name === selected ? "selected" : ""}>${escapeHTML(name)}</option>`).join("");
+}
+
+function queueConditionOptions(selected = "") {
+  return QUEUE_CONDITIONS.map(name => `<option value="${escapeHTML(name)}" ${name === selected ? "selected" : ""}>${escapeHTML(name)}</option>`).join("");
+}
+
+function queueConditionsFromFields({ classificacao = "", tipoAtendimento = "", modalidade = "" } = {}) {
+  const values = [];
+  if (["Urgência", "Prioritário", "Eletivo"].includes(classificacao)) values.push(classificacao);
+  if (["Pós-operatório", "AVC", "Respiratório", "Infantil", "Adulto"].includes(tipoAtendimento)) values.push(tipoAtendimento);
+  if (modalidade === "Domiciliar") values.push("Domiciliar");
+  return [...new Set(values)];
+}
+
+function queuePrimaryCondition(item = {}) {
+  const conditions = Array.isArray(item.condicoesFila) && item.condicoesFila.length
+    ? item.condicoesFila
+    : queueConditionsFromFields(item);
+  for (const value of ["Urgência", "Prioritário", "Eletivo"]) {
+    if (conditions.includes(value)) return value;
+  }
+  for (const value of ["Pós-operatório", "AVC", "Respiratório", "Infantil", "Adulto"]) {
+    if (conditions.includes(value)) return value;
+  }
+  if (conditions.includes("Domiciliar")) return "Domiciliar";
+  return item.condicaoPrincipal || "Geral";
+}
+
+function queueConditionBadges(item = {}) {
+  const conditions = Array.isArray(item.condicoesFila) && item.condicoesFila.length
+    ? item.condicoesFila
+    : queueConditionsFromFields(item);
+  const display = conditions.length ? conditions : [item.condicaoPrincipal || "Geral"];
+  return `<div class="condition-tags">${[...new Set(display)].map(value => badge(value)).join("")}</div>`;
+}
+
+function queueDateISO(value) {
+  const date = timestampToDate(value);
+  return date ? dateToISO(date) : "";
 }
 
 function updateSpecialtyFields(prefix = "") {
@@ -693,6 +746,11 @@ async function renderPatients() {
       if (cursor) constraints.push(startAfter(cursor));
       else constraints.push(startAt(term));
       constraints.push(endAt(`${term}\uf8ff`));
+    } else if (condition) {
+      constraints.push(condition === "Geral" || condition === "Não informado"
+        ? where("condicaoPrincipal", "==", condition)
+        : where("condicoesFila", "array-contains", condition));
+      if (cursor) constraints.push(startAfter(cursor));
     } else if (specialty) {
       constraints.push(where("especialidade", "==", specialty));
       if (cursor) constraints.push(startAfter(cursor));
@@ -882,16 +940,22 @@ async function openQueueDialog(patient) {
       document.querySelector("#queue-especialidade").addEventListener("change", () => updateSpecialtyFields("queue-"));
     },
     onSubmit: async formData => {
+      const queueFields = {
+        especialidade: formValue(formData, "especialidade"),
+        tipoAtendimento: formValue(formData, "tipoAtendimento"),
+        classificacao: formValue(formData, "classificacao"),
+        modalidade: formValue(formData, "modalidade")
+      };
+      const condicoesFila = queueConditionsFromFields(queueFields);
       const created = await addDoc(collection(db, "filaEspera"), {
         pacienteId: patient.id,
         pacienteNome: patient.nome,
         pacienteNomeBusca: normalize(patient.nome),
         pacienteCpf: patient.cpf,
         telefone: patient.telefone,
-        especialidade: formValue(formData, "especialidade"),
-        tipoAtendimento: formValue(formData, "tipoAtendimento"),
-        classificacao: formValue(formData, "classificacao"),
-        modalidade: formValue(formData, "modalidade"),
+        ...queueFields,
+        condicoesFila,
+        condicaoPrincipal: queuePrimaryCondition({ ...queueFields, condicoesFila }),
         observacoes: formValue(formData, "observacoes"),
         status: "aguardando",
         dataEntrada: serverTimestamp(),
@@ -921,6 +985,7 @@ async function renderQueue() {
         <input id="queue-search" type="search" placeholder="Nome, CPF ou telefone">
         <select id="queue-specialty-filter"><option value="">Todas as especialidades</option>${specialtyOptions()}</select>
         <select id="queue-class-filter"><option value="">Todas as classificações</option>${classificationOptions()}</select>
+        <select id="queue-condition-filter"><option value="">Todas as condições</option>${queueConditionOptions()}</select>
       </div>
       <button class="secondary-button" data-go="patients">Cadastrar ou localizar paciente</button>
     </div>
@@ -931,6 +996,7 @@ async function renderQueue() {
   const searchInput = document.querySelector("#queue-search");
   const specialtyInput = document.querySelector("#queue-specialty-filter");
   const classificationInput = document.querySelector("#queue-class-filter");
+  const conditionInput = document.querySelector("#queue-condition-filter");
   let page = 1;
   let cursors = [null];
 
@@ -940,6 +1006,7 @@ async function renderQueue() {
     const digits = onlyDigits(raw);
     const specialty = specialtyInput.value;
     const classification = classificationInput.value;
+    const condition = conditionInput.value;
     const constraints = [];
 
     if (raw && digits.length === 11) {
@@ -953,6 +1020,11 @@ async function renderQueue() {
       if (cursor) constraints.push(startAfter(cursor));
       else constraints.push(startAt(term));
       constraints.push(endAt(`${term}\uf8ff`));
+    } else if (condition) {
+      constraints.push(condition === "Geral" || condition === "Não informado"
+        ? where("condicaoPrincipal", "==", condition)
+        : where("condicoesFila", "array-contains", condition));
+      if (cursor) constraints.push(startAfter(cursor));
     } else if (specialty) {
       constraints.push(where("especialidade", "==", specialty));
       if (cursor) constraints.push(startAfter(cursor));
@@ -971,8 +1043,10 @@ async function renderQueue() {
     if (item.status !== "aguardando") return false;
     const specialty = specialtyInput.value;
     const classification = classificationInput.value;
+    const condition = conditionInput.value;
     if (specialty && item.especialidade !== specialty) return false;
     if (classification && item.classificacao !== classification) return false;
+    if (condition && queuePrimaryCondition(item) !== condition && !(item.condicoesFila || []).includes(condition)) return false;
     const raw = searchInput.value.trim();
     if (!raw) return true;
     return normalize(`${item.pacienteNome || ""} ${item.pacienteCpf || ""} ${item.telefone || ""} ${item.telefoneSecundario || ""}`).includes(normalize(raw));
@@ -1010,6 +1084,7 @@ async function renderQueue() {
   searchInput.addEventListener("input", resetAndLoad);
   specialtyInput.addEventListener("change", () => loadPage(true));
   classificationInput.addEventListener("change", () => loadPage(true));
+  conditionInput.addEventListener("change", () => loadPage(true));
   panel.addEventListener("click", async event => {
     const button = event.target.closest("[data-queue-nav]");
     if (!button || button.disabled) return;
@@ -1023,23 +1098,97 @@ async function renderQueue() {
 
 function queueTable(items, actions = true) {
   if (!items.length) return emptyHTML("Fila de espera vazia", "Nenhum paciente está aguardando encaminhamento.");
-  const priority = { "Urgência": 0, "Prioritário": 1, "Eletivo": 2, "Não se aplica": 3 };
+  const priority = { "Urgência": 0, "Prioritário": 1, "Eletivo": 2, "Não se aplica": 3, "Não informado": 4 };
   const sorted = [...items].sort((a,b) => {
     const p = (priority[a.classificacao] ?? 9) - (priority[b.classificacao] ?? 9);
     if (p !== 0) return p;
-    return (timestampToDate(a.dataEntrada)?.getTime() || 0) - (timestampToDate(b.dataEntrada)?.getTime() || 0);
+    const da = timestampToDate(a.dataEntrada)?.getTime() ?? Number.POSITIVE_INFINITY;
+    const db = timestampToDate(b.dataEntrada)?.getTime() ?? Number.POSITIVE_INFINITY;
+    return da - db;
   });
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Paciente</th><th>Especialidade</th><th>Classificação</th><th>Entrada</th><th>Espera</th>${actions ? "<th>Ações</th>" : ""}</tr></thead>
-    <tbody>${sorted.map(item => `<tr>
-      <td><strong>${escapeHTML(item.pacienteNome)}</strong><br><small>${escapeHTML(formatCPF(item.pacienteCpf))}</small></td>
-      <td>${escapeHTML(item.especialidade)}<br><small>${escapeHTML(item.tipoAtendimento)} · ${escapeHTML(item.modalidade)}</small></td>
-      <td>${badge(item.classificacao)}</td>
+    <thead><tr><th>Paciente</th><th>Especialidade</th><th>Condições da fila</th><th>Classificação</th><th>Entrada</th><th>Espera</th>${actions ? "<th>Ações</th>" : ""}</tr></thead>
+    <tbody>${sorted.map(item => `<tr class="${item.classificacao === "Urgência" ? "queue-urgent-row" : ""}">
+      <td><strong>${escapeHTML(item.pacienteNome)}</strong><br><small>${escapeHTML(formatCPF(item.pacienteCpf) || formatPhone(item.telefone) || "Cadastro incompleto")}</small></td>
+      <td>${escapeHTML(item.especialidade)}<br><small>${escapeHTML(item.tipoAtendimento || "Não informado")} · ${escapeHTML(item.modalidade || "Não informado")}</small></td>
+      <td>${queueConditionBadges(item)}</td>
+      <td>${badge(item.classificacao || "Não informado")}</td>
       <td>${escapeHTML(formatTimestamp(item.dataEntrada, false))}</td>
-      <td><strong>${daysWaiting(item.dataEntrada)} dia(s)</strong></td>
-      ${actions ? `<td><div class="actions-cell"><button class="table-button primary" data-action="refer-patient" data-id="${item.id}">Encaminhar</button><button class="table-button danger" data-action="remove-queue" data-id="${item.id}">Retirar</button></div></td>` : ""}
+      <td><strong>${item.dataEntrada ? `${daysWaiting(item.dataEntrada)} dia(s)` : "Data não informada"}</strong></td>
+      ${actions ? `<td><div class="actions-cell"><button class="table-button" data-action="edit-queue" data-id="${item.id}">Editar</button><button class="table-button primary" data-action="refer-patient" data-id="${item.id}">Encaminhar</button><button class="table-button danger" data-action="remove-queue" data-id="${item.id}">Retirar</button></div></td>` : ""}
     </tr>`).join("")}</tbody>
   </table></div>`;
+}
+
+async function openQueueEditDialog(queueItem) {
+  if (!queueItem) throw new Error("Registro da fila não encontrado.");
+  openDialog({
+    title: "Editar paciente na fila",
+    description: "Corrija os dados sem retirar o paciente da posição de espera.",
+    submitLabel: "Salvar alterações",
+    body: `<div class="form-grid">
+      <label class="span-2">Nome do paciente<input name="pacienteNome" value="${escapeHTML(queueItem.pacienteNome || "")}" required></label>
+      <label>Telefone principal<input name="telefone" value="${escapeHTML(formatPhone(queueItem.telefone || ""))}"></label>
+      <label>Telefone secundário<input name="telefoneSecundario" value="${escapeHTML(formatPhone(queueItem.telefoneSecundario || ""))}"></label>
+      <label>Especialidade<select id="queue-edit-especialidade" name="especialidade">${specialtyOptions(queueItem.especialidade)}</select></label>
+      <label>Tipo de atendimento<select id="queue-edit-tipoAtendimento" name="tipoAtendimento" data-selected="${escapeHTML(queueItem.tipoAtendimento || "")}"></select></label>
+      <label>Classificação<select name="classificacao">${classificationOptions(queueItem.classificacao || "Não informado")}</select></label>
+      <label>Modalidade<select id="queue-edit-modalidade" name="modalidade" data-selected="${escapeHTML(queueItem.modalidade || "Não informado")}"></select></label>
+      <label>Data de entrada<input name="dataEntrada" type="date" value="${escapeHTML(queueDateISO(queueItem.dataEntrada))}"></label>
+      <label class="span-2">Observações<textarea name="observacoes">${escapeHTML(queueItem.observacoes || "")}</textarea></label>
+      <div class="info-box span-2">As condições da fila serão recalculadas automaticamente a partir da classificação, do tipo de atendimento e da modalidade.</div>
+    </div>`,
+    afterOpen: () => {
+      updateSpecialtyFields("queue-edit-");
+      document.querySelector("#queue-edit-especialidade").addEventListener("change", () => updateSpecialtyFields("queue-edit-"));
+    },
+    onSubmit: async formData => {
+      const pacienteNome = formValue(formData, "pacienteNome");
+      if (!pacienteNome) throw new Error("Informe o nome do paciente.");
+      const queueFields = {
+        especialidade: formValue(formData, "especialidade"),
+        tipoAtendimento: formValue(formData, "tipoAtendimento"),
+        classificacao: formValue(formData, "classificacao"),
+        modalidade: formValue(formData, "modalidade")
+      };
+      const condicoesFila = queueConditionsFromFields(queueFields);
+      const dataEntrada = formValue(formData, "dataEntrada");
+      const telefone = onlyDigits(formValue(formData, "telefone"));
+      const telefoneSecundario = onlyDigits(formValue(formData, "telefoneSecundario"));
+      const batch = writeBatch(db);
+      batch.update(doc(db, "filaEspera", queueItem.id), {
+        pacienteNome,
+        pacienteNomeBusca: normalize(pacienteNome),
+        telefone,
+        telefoneSecundario,
+        ...queueFields,
+        condicoesFila,
+        condicaoPrincipal: queuePrimaryCondition({ ...queueFields, condicoesFila }),
+        dataEntrada: dataEntrada ? parseISODate(dataEntrada) : null,
+        observacoes: formValue(formData, "observacoes"),
+        cadastroIncompleto: !telefone || !dataEntrada,
+        atualizadoEm: serverTimestamp(),
+        atualizadoPor: state.user.uid
+      });
+      batch.set(doc(db, "pacientes", queueItem.pacienteId), {
+        nome: pacienteNome,
+        nomeBusca: normalize(pacienteNome),
+        telefone,
+        telefoneSecundario,
+        ...queueFields,
+        condicoesFila,
+        condicaoPrincipal: queuePrimaryCondition({ ...queueFields, condicoesFila }),
+        observacoes: formValue(formData, "observacoes"),
+        atualizadoEm: serverTimestamp(),
+        atualizadoPor: state.user.uid
+      }, { merge: true });
+      await batch.commit();
+      await logAction("editar_fila", "filaEspera", queueItem.id, { pacienteNome, condicoesFila });
+      invalidateDataCache("pacientes:", "filaEspera:", "reports-queue:");
+      toast("Dados da fila atualizados com sucesso.");
+      await renderQueue();
+    }
+  });
 }
 
 async function openReferralDialog(queueItem) {
@@ -1060,8 +1209,9 @@ async function openReferralDialog(queueItem) {
       <label class="span-2">Profissional responsável<select name="profissionalId" required><option value="">Selecione</option>${professionals.map(item => `<option value="${item.id}">${escapeHTML(item.nome)}${item.registro ? ` · ${escapeHTML(item.registro)}` : ""}</option>`).join("")}</select></label>
       <label>Data de início<input name="dataInicio" type="date" value="${todayISO()}" required></label>
       <label>Modalidade<input value="${escapeHTML(queueItem.modalidade)}" disabled></label>
+      <div class="info-box span-2"><strong>Condições da fila:</strong> ${queueConditionBadges(queueItem)}</div>
       <label class="span-2">Observações para o profissional<textarea name="observacoes">${escapeHTML(queueItem.observacoes || "")}</textarea></label>
-      <div class="info-box span-2">Ao confirmar, o paciente sairá da fila e aparecerá imediatamente na carteira do profissional selecionado.</div>
+      <div class="info-box span-2">Ao confirmar, o paciente sairá da fila e aparecerá imediatamente na carteira do profissional selecionado. O botão Cancelar ou o X fecham esta janela sem alterar o paciente.</div>
     </div>`,
     onSubmit: async formData => {
       const professional = professionals.find(item => item.id === formValue(formData, "profissionalId"));
@@ -1082,6 +1232,8 @@ async function openReferralDialog(queueItem) {
         tipoAtendimento: queueItem.tipoAtendimento,
         classificacao: queueItem.classificacao,
         modalidade: queueItem.modalidade,
+        condicaoPrincipal: queuePrimaryCondition(queueItem),
+        condicoesFila: Array.isArray(queueItem.condicoesFila) ? queueItem.condicoesFila : queueConditionsFromFields(queueItem),
         dataInicio: formValue(formData, "dataInicio"),
         observacoesRecepcao: formValue(formData, "observacoes"),
         observacoesProfissional: "",
@@ -3399,8 +3551,22 @@ function migrationSpecialtySummary(records = []) {
   return [...totals.entries()].sort((a, b) => a[0].localeCompare(b[0], "pt-BR"));
 }
 
+function migrationConditionSummary(records = []) {
+  const totals = new Map();
+  records.forEach(record => {
+    const values = Array.isArray(record.condicoesFila) && record.condicoesFila.length
+      ? record.condicoesFila
+      : [record.condicaoPrincipal || queuePrimaryCondition(record)];
+    values.forEach(value => totals.set(value, (totals.get(value) || 0) + 1));
+  });
+  return [...totals.entries()].sort((a, b) => b[1] - a[1]);
+}
+
 function validateWaitingListMigrationPayload(payload) {
   if (!payload || typeof payload !== "object") throw new Error("O JSON selecionado não é válido.");
+  if (payload.metadata?.datasetId !== WAITING_LIST_MIGRATION_ID) {
+    throw new Error("Este é um pacote antigo. Selecione o JSON com as condições clínicas organizadas (versão 2.0).");
+  }
   const patients = payload.pacientesSugeridos;
   const queue = payload.filaEsperaParaImportar;
   if (!Array.isArray(patients) || !Array.isArray(queue)) {
@@ -3468,7 +3634,7 @@ function migrationPatientQueueMap(queue) {
   return map;
 }
 
-function migrationPatientDocument(patient, queueItems) {
+function migrationPatientDocument(patient, queueItems, { preserveWorkflow = false } = {}) {
   const first = queueItems[0] || {};
   const dates = queueItems.map(item => item.dataEntrada).filter(Boolean).sort();
   const reasons = [...new Set([
@@ -3480,7 +3646,7 @@ function migrationPatientDocument(patient, queueItems) {
     reasons.length ? `Pendências preservadas: ${reasons.join("; ")}.` : "Dados pessoais complementares ainda precisam ser conferidos."
   ];
 
-  return {
+  const documentData = {
     nome: migrationText(patient.nome),
     nomeBusca: normalize(patient.nomeBusca || patient.nome),
     cpf: "",
@@ -3494,6 +3660,9 @@ function migrationPatientDocument(patient, queueItems) {
     tipoAtendimento: migrationText(first.tipoAtendimento, "Não informado"),
     classificacao: migrationText(first.classificacao, "Não informado"),
     modalidade: migrationText(first.modalidade, "Não informado"),
+    condicaoPrincipal: migrationText(first.condicaoPrincipal, queuePrimaryCondition(first)),
+    condicoesFila: Array.isArray(first.condicoesFila) ? first.condicoesFila : queueConditionsFromFields(first),
+    marcadoresComplementares: Array.isArray(first.marcadoresComplementares) ? first.marcadoresComplementares : [],
     endereco: "",
     observacoes: notes.join(" "),
     status: "na_fila",
@@ -3508,10 +3677,18 @@ function migrationPatientDocument(patient, queueItems) {
     atualizadoEm: serverTimestamp(),
     atualizadoPor: state.user.uid
   };
+  if (preserveWorkflow) {
+    delete documentData.status;
+    delete documentData.criadoEm;
+    delete documentData.criadoPor;
+  }
+  return documentData;
 }
 
-function migrationQueueDocument(item) {
+function migrationQueueDocument(item, { preserveWorkflow = false } = {}) {
   const notes = [
+    Array.isArray(item.condicoesFila) && item.condicoesFila.length ? `Condições organizadas: ${item.condicoesFila.join(", ")}.` : "",
+    Array.isArray(item.marcadoresComplementares) && item.marcadoresComplementares.length ? `Marcações complementares: ${item.marcadoresComplementares.join(", ")}.` : "",
     item.observacoes,
     item.profissionalReferenciado ? `Profissional anotado na planilha: ${item.profissionalReferenciado}.` : "",
     item.pendenciaNaoBloqueante || item.motivosRevisao
@@ -3520,7 +3697,7 @@ function migrationQueueDocument(item) {
     `Origem: ${item.arquivoOrigem || "planilha"}${item.linhaOrigem ? `, linha ${item.linhaOrigem}` : ""}.`
   ].filter(Boolean).join(" ");
 
-  return {
+  const documentData = {
     pacienteId: migrationSafeId(item.chavePaciente, "paciente"),
     pacienteNome: migrationText(item.nomePaciente),
     pacienteNomeBusca: normalize(item.nomeBusca || item.nomePaciente),
@@ -3532,6 +3709,9 @@ function migrationQueueDocument(item) {
     tipoAtendimento: migrationText(item.tipoAtendimento, "Não informado"),
     classificacao: migrationText(item.classificacao, "Não informado"),
     modalidade: migrationText(item.modalidade, "Não informado"),
+    condicaoPrincipal: migrationText(item.condicaoPrincipal, queuePrimaryCondition(item)),
+    condicoesFila: Array.isArray(item.condicoesFila) ? item.condicoesFila : queueConditionsFromFields(item),
+    marcadoresComplementares: Array.isArray(item.marcadoresComplementares) ? item.marcadoresComplementares : [],
     observacoes: notes,
     status: "aguardando",
     dataEntrada: migrationDate(item.dataEntrada),
@@ -3551,6 +3731,12 @@ function migrationQueueDocument(item) {
     atualizadoEm: serverTimestamp(),
     atualizadoPor: state.user.uid
   };
+  if (preserveWorkflow) {
+    delete documentData.status;
+    delete documentData.criadoEm;
+    delete documentData.criadoPor;
+  }
+  return documentData;
 }
 
 async function renderMigration() {
@@ -3570,7 +3756,7 @@ async function renderMigration() {
       <div>
         <span class="eyebrow">Ferramenta administrativa</span>
         <h2>Migração das filas de espera de 2026</h2>
-        <p>Importe o JSON privado preparado a partir das seis planilhas. O arquivo é lido no navegador e somente os dados confirmados são enviados ao Firestore.</p>
+        <p>Importe o JSON privado com as condições clínicas separadas do nome. Urgência, pós-operatório, AVC, respiratório e domiciliar serão gravados em campos próprios.</p>
       </div>
       <div class="migration-status ${completed ? "done" : inProgress ? "warning" : "ready"}">
         <span>${completed ? "✓" : inProgress ? "!" : "↓"}</span>
@@ -3591,14 +3777,14 @@ async function renderMigration() {
         <div class="panel-heading"><div><span class="eyebrow">Como funciona</span><h3>Importação em duas etapas</h3></div></div>
         <div class="migration-steps">
           <div><b>1</b><span><strong>Pacientes</strong><small>Cria 1 cadastro por pessoa, marcado como incompleto para conferência futura.</small></span></div>
-          <div><b>2</b><span><strong>Fila de espera</strong><small>Cria todas as entradas ainda aguardando, inclusive as que possuem pendências.</small></span></div>
+          <div><b>2</b><span><strong>Fila organizada</strong><small>Cria todas as entradas aguardando com classificação, tipo, modalidade e etiquetas de condição.</small></span></div>
           <div><b>3</b><span><strong>Conclusão</strong><small>Grava um marcador que bloqueia uma nova importação acidental.</small></span></div>
         </div>
       </section>
       <section class="panel migration-panel">
         <div class="panel-heading"><div><span class="eyebrow">Cuidados</span><h3>Antes de iniciar</h3></div></div>
         <ul class="migration-checklist">
-          <li>Use somente o arquivo <strong>fila-espera-cran-2026-importar-todos-aguardando.json</strong>.</li>
+          <li>Use somente o arquivo <strong>fila-espera-cran-2026-condicoes-organizadas.json</strong>.</li>
           <li>Não coloque o JSON no GitHub, no Hosting ou dentro da pasta pública.</li>
           <li>Mantenha esta página aberta até a barra chegar a 100%.</li>
           <li>Os 43 desistentes ou encaminhados externamente não entram na fila ativa.</li>
@@ -3631,7 +3817,7 @@ async function openWaitingListImportDialog() {
       <label class="file-drop-field">
         <span>Arquivo tratado das filas (.json)</span>
         <input id="waiting-list-import-file" name="waitingListImportFile" type="file" accept="application/json,.json" required>
-        <small>Arquivo esperado: fila-espera-cran-2026-importar-todos-aguardando.json</small>
+        <small>Arquivo esperado: fila-espera-cran-2026-condicoes-organizadas.json</small>
       </label>
       <div id="waiting-list-import-preview" class="archive-import-preview muted-box">Selecione o JSON para conferir os números antes de importar.</div>
       <label class="migration-confirmation hidden" id="waiting-list-confirmation-wrap">
@@ -3657,6 +3843,7 @@ async function openWaitingListImportDialog() {
           const parsed = validateWaitingListMigrationPayload(JSON.parse(await file.text()));
           selectedPayload = parsed;
           const specialties = migrationSpecialtySummary(parsed.queue);
+          const conditions = migrationConditionSummary(parsed.queue);
           const incomplete = parsed.queue.filter(item => item.cadastroIncompleto || item.requerRevisao).length;
           preview.className = "archive-import-preview migration-preview";
           preview.innerHTML = `<div class="migration-preview-numbers">
@@ -3666,7 +3853,8 @@ async function openWaitingListImportDialog() {
               <span><strong>${parsed.closed.length.toLocaleString("pt-BR")}</strong><small>fora da fila</small></span>
             </div>
             <div class="migration-specialty-preview">${specialties.map(([name, total]) => `<span>${escapeHTML(name)} <b>${total.toLocaleString("pt-BR")}</b></span>`).join("")}</div>
-            <small>Os registros com pendências também serão importados e ficarão sinalizados como cadastro incompleto.</small>`;
+            <div class="migration-specialty-preview">${conditions.slice(0, 8).map(([name, total]) => `<span>${escapeHTML(name)} <b>${total.toLocaleString("pt-BR")}</b></span>`).join("")}</div>
+            <small>As condições foram retiradas do nome e serão usadas para filtrar e organizar a fila. Registros com pendências também serão importados.</small>`;
           confirmation.classList.remove("hidden");
         } catch (error) {
           preview.className = "archive-import-preview error-box";
@@ -3698,9 +3886,11 @@ async function openWaitingListImportDialog() {
       progress.classList.remove("hidden");
 
       const markerRef = doc(db, "configuracoes", `migracao_${WAITING_LIST_MIGRATION_ID}`);
+      const legacyMarkerRef = doc(db, "configuracoes", `migracao_${LEGACY_WAITING_LIST_MIGRATION_ID}`);
       progressLabel.textContent = "Verificando a migração...";
-      const markerSnap = await getDoc(markerRef);
+      const [markerSnap, legacyMarkerSnap] = await Promise.all([getDoc(markerRef), getDoc(legacyMarkerRef)]);
       const marker = markerSnap.exists() ? markerSnap.data() : null;
+      const preserveWorkflow = legacyMarkerSnap.exists() && legacyMarkerSnap.data().concluida === true;
       if (marker?.concluida === true) {
         progressBar.value = 100;
         progressValue.textContent = "100%";
@@ -3724,6 +3914,7 @@ async function openWaitingListImportDialog() {
         iniciadoEm: marker?.iniciadoEm || serverTimestamp(),
         iniciadoPor: marker?.iniciadoPor || state.user.uid,
         iniciadoPorNome: marker?.iniciadoPorNome || state.profile.nome || state.user.email,
+        modoAtualizacao: preserveWorkflow ? "atualizar_condicoes_sem_reabrir_fluxos" : "importacao_inicial",
         atualizadoEm: serverTimestamp()
       }, { merge: true });
 
@@ -3741,7 +3932,7 @@ async function openWaitingListImportDialog() {
         chunk.forEach(patient => {
           const patientId = migrationSafeId(patient.chavePaciente, "paciente");
           const queueItems = queueByPatient.get(patient.chavePaciente) || [];
-          batch.set(doc(db, "pacientes", patientId), migrationPatientDocument(patient, queueItems), { merge: true });
+          batch.set(doc(db, "pacientes", patientId), migrationPatientDocument(patient, queueItems, { preserveWorkflow }), { merge: true });
         });
         await batch.commit();
         completedWrites += chunk.length;
@@ -3762,7 +3953,7 @@ async function openWaitingListImportDialog() {
         const batch = writeBatch(db);
         chunk.forEach(item => {
           const queueId = migrationSafeId(item.chaveFila, "fila");
-          batch.set(doc(db, "filaEspera", queueId), migrationQueueDocument(item), { merge: true });
+          batch.set(doc(db, "filaEspera", queueId), migrationQueueDocument(item, { preserveWorkflow }), { merge: true });
         });
         await batch.commit();
         completedWrites += chunk.length;
@@ -3786,6 +3977,7 @@ async function openWaitingListImportDialog() {
         filasImportadas: selectedPayload.queue.length,
         registrosForaDaFila: selectedPayload.closed.length,
         registrosComPendencias: selectedPayload.queue.filter(item => item.cadastroIncompleto || item.requerRevisao).length,
+        modoAtualizacao: preserveWorkflow ? "atualizar_condicoes_sem_reabrir_fluxos" : "importacao_inicial",
         concluidaEm: serverTimestamp(),
         concluidaPor: state.user.uid,
         concluidaPorNome: state.profile.nome || state.user.email,
@@ -3829,6 +4021,7 @@ el.pageContent.addEventListener("click", async event => {
     if (action === "view-patient") return viewPatient(findCached("patients", id));
     if (action === "edit-patient") return openPatientDialog(findCached("patients", id));
     if (action === "add-queue") return await openQueueDialog(findCached("patients", id));
+    if (action === "edit-queue") return await openQueueEditDialog(findCached("queue", id));
     if (action === "refer-patient") return await openReferralDialog(findCached("queue", id));
     if (action === "remove-queue") return await removeFromQueue(findCached("queue", id));
     if (action === "care-details") return careDetails(findCached("care", id));
@@ -3876,8 +4069,20 @@ el.dialogForm.addEventListener("submit", async event => {
   }
 });
 
-document.querySelector("#dialog-close").addEventListener("click", closeDialog);
-document.querySelector("#dialog-cancel").addEventListener("click", closeDialog);
+document.querySelector("#dialog-close").addEventListener("click", event => {
+  event.preventDefault();
+  event.stopPropagation();
+  closeDialog();
+});
+document.querySelector("#dialog-cancel").addEventListener("click", event => {
+  event.preventDefault();
+  event.stopPropagation();
+  closeDialog();
+});
+el.dialog.addEventListener("cancel", event => {
+  event.preventDefault();
+  closeDialog();
+});
 
 el.loginForm.addEventListener("submit", async event => {
   event.preventDefault();
@@ -3976,7 +4181,7 @@ el.installButton.addEventListener("click", async () => {
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   try {
-    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.9.0");
+    state.registration = await navigator.serviceWorker.register("/sw.js?v=2.0.0");
     if (state.registration.waiting) el.updateBanner.classList.remove("hidden");
     state.registration.addEventListener("updatefound", () => {
       const worker = state.registration.installing;
