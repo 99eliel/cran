@@ -29,7 +29,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.7.1";
+const APP_VERSION = "1.8.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -249,8 +249,8 @@ function authErrorMessage(error) {
     "auth/weak-password": "A senha deve ter pelo menos 6 caracteres.",
     "auth/invalid-email": "Informe um e-mail válido.",
     "permission-denied": "Você não tem permissão para realizar esta ação.",
-    "failed-precondition": "O Firebase ainda não possui um índice necessário. Publique os índices do projeto e tente novamente.",
-    "firestore/failed-precondition": "O Firebase ainda não possui um índice necessário. Publique os índices do projeto e tente novamente."
+    "failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 1.8.0 e limpe o cache do navegador.",
+    "firestore/failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 1.8.0 e limpe o cache do navegador."
   };
   return messages[error?.code] || error?.message || "Não foi possível concluir a operação.";
 }
@@ -332,12 +332,15 @@ function endOfDay(value) {
 }
 
 async function hasAppointmentConflict({ professionalId, patientId, data, horario, excludeId = "" }) {
+  // Consulta apenas a data (índice simples automático) e confere horário,
+  // profissional e paciente localmente. Assim o agendamento funciona sem
+  // depender de índice composto.
   const items = await readCollection("agendamentos", [
     where("data", "==", data),
-    where("horario", "==", horario),
-    limit(100)
-  ]);
+    limit(500)
+  ], { cacheKey: `conflict:${data}`, ttl: 15_000, force: true });
   return items.some(item => item.id !== excludeId
+    && item.horario === horario
     && item.status === "agendado"
     && (item.profissionalId === professionalId || item.pacienteId === patientId));
 }
@@ -483,25 +486,23 @@ async function renderDashboard() {
       el.pageContent.innerHTML = emptyHTML("Usuário sem profissional vinculado", "Peça ao administrador para vincular seu acesso a um profissional.");
       return;
     }
-    const [care, todayCount, upcoming] = await Promise.all([
+    const [careRaw, professionalAppointments] = await Promise.all([
       readCollection("atendimentos", [
-        where("profissionalId", "==", professionalId),
-        where("status", "in", ["ativo", "alta_solicitada"])
+        where("profissionalId", "==", professionalId)
       ], { cacheKey: `dashboard-care:${professionalId}`, ttl: 60_000 }),
-      countCollection("agendamentos", [
-        where("profissionalId", "==", professionalId),
-        where("data", "==", todayISO()),
-        where("status", "==", "agendado")
-      ]),
+      // A consulta pelo profissional é autorizada pelas regras e usa somente
+      // um índice simples automático. O período e a situação são filtrados localmente.
       readCollection("agendamentos", [
         where("profissionalId", "==", professionalId),
-        where("data", ">=", todayISO()),
-        where("status", "==", "agendado"),
-        orderBy("data", "asc"),
-        orderBy("horario", "asc"),
-        limit(8)
-      ], { cacheKey: `dashboard-upcoming:${professionalId}:${todayISO()}`, ttl: 60_000 })
+        limit(1000)
+      ], { cacheKey: `dashboard-appointments:${professionalId}`, ttl: 60_000 })
     ]);
+    const care = careRaw.filter(item => ["ativo", "alta_solicitada"].includes(item.status));
+    const pendingAppointments = professionalAppointments
+      .filter(item => item.status === "agendado" && item.data >= todayISO())
+      .sort((a, b) => `${a.data || ""}${a.horario || ""}`.localeCompare(`${b.data || ""}${b.horario || ""}`));
+    const todayCount = pendingAppointments.filter(item => item.data === todayISO()).length;
+    const upcoming = pendingAppointments.slice(0, 8);
 
     el.pageContent.innerHTML = `
       ${welcomeBlock({ professional: true })}
@@ -524,42 +525,33 @@ async function renderDashboard() {
     return;
   }
 
-  // O painel não deve ficar inutilizável caso algum índice ainda esteja em criação.
-  // Cada indicador falha isoladamente e volta a funcionar automaticamente após a publicação dos índices.
-  const safeDashboardValue = async (promise, fallback, label) => {
-    try {
-      return await promise;
-    } catch (error) {
-      console.warn(`Indicador indisponível (${label}):`, error);
-      return fallback;
-    }
-  };
-
-  const specialtyEntries = await Promise.all(Object.keys(SPECIALTIES).map(async name => [
-    name,
-    await safeDashboardValue(countCollection("filaEspera", [
-      where("status", "==", "aguardando"),
-      where("especialidade", "==", name)
-    ]), 0, `fila-${name}`)
-  ]));
-  const specialtyCounts = Object.fromEntries(specialtyEntries);
-
-  const [waiting, urgent, activeCare, todayAppointments, activeProfessionals, archived, activePatients, recentQueueRaw] = await Promise.all([
-    safeDashboardValue(countCollection("filaEspera", [where("status", "==", "aguardando")]), 0, "fila-total"),
-    safeDashboardValue(countCollection("filaEspera", [where("status", "==", "aguardando"), where("classificacao", "==", "Urgência")]), 0, "fila-urgente"),
-    safeDashboardValue(countCollection("atendimentos", [where("status", "in", ["ativo", "alta_solicitada"])]), 0, "atendimentos-ativos"),
-    safeDashboardValue(countCollection("agendamentos", [where("data", "==", todayISO()), where("status", "==", "agendado")]), 0, "agenda-hoje"),
-    safeDashboardValue(countCollection("profissionais", [where("ativo", "==", true)]), 0, "profissionais-ativos"),
-    safeDashboardValue(countCollection("arquivoMorto", [where("status", "==", "arquivado")]), 0, "arquivo-morto"),
-    safeDashboardValue(countCollection("pacientes", [where("status", "!=", "arquivo_morto")]), 0, "pacientes-ativos"),
-    // Consulta somente os 25 registros mais recentes e filtra aguardando localmente.
-    // Assim o painel abre mesmo antes do índice status + dataEntrada ficar pronto.
-    safeDashboardValue(readCollection("filaEspera", [orderBy("dataEntrada", "desc"), limit(25)], {
-      cacheKey: "dashboard-recent-queue-v171",
+  // O painel usa somente consultas de um campo, atendidas pelos índices
+  // automáticos do Firestore. A fila é lida uma única vez e os indicadores
+  // derivados são calculados localmente.
+  const [waitingItems, activeCare, todayItems, activeProfessionals, archived, activePatients] = await Promise.all([
+    readCollection("filaEspera", [where("status", "==", "aguardando")], {
+      cacheKey: "dashboard-waiting-v180",
       ttl: 60_000
-    }), [], "fila-recente")
+    }),
+    countCollection("atendimentos", [where("status", "in", ["ativo", "alta_solicitada"])]),
+    readCollection("agendamentos", [where("data", "==", todayISO())], {
+      cacheKey: `dashboard-today:${todayISO()}`,
+      ttl: 60_000
+    }),
+    countCollection("profissionais", [where("ativo", "==", true)]),
+    countCollection("arquivoMorto", [where("status", "==", "arquivado")]),
+    countCollection("pacientes", [where("status", "!=", "arquivo_morto")])
   ]);
-  const recentQueue = recentQueueRaw.filter(item => item.status === "aguardando").slice(0, 7);
+  const waiting = waitingItems.length;
+  const urgent = waitingItems.filter(item => item.classificacao === "Urgência").length;
+  const todayAppointments = todayItems.filter(item => item.status === "agendado").length;
+  const specialtyCounts = Object.fromEntries(Object.keys(SPECIALTIES).map(name => [
+    name,
+    waitingItems.filter(item => item.especialidade === name).length
+  ]));
+  const recentQueue = [...waitingItems]
+    .sort((a, b) => (timestampToDate(b.dataEntrada)?.getTime() || 0) - (timestampToDate(a.dataEntrada)?.getTime() || 0))
+    .slice(0, 7);
 
   el.pageContent.innerHTML = `
     ${welcomeBlock()}
@@ -575,13 +567,13 @@ async function renderDashboard() {
         ${recentQueue.length ? queueTable(recentQueue, false) : emptyHTML("Fila vazia", "Não há pacientes aguardando atendimento.")}
       </div>
       <div class="panel">
-        <div class="panel-header"><div><h3>Fila por especialidade</h3><p>Contagem feita sem baixar todos os cadastros</p></div></div>
+        <div class="panel-header"><div><h3>Fila por especialidade</h3><p>Resumo da fila carregada nesta abertura</p></div></div>
         ${summaryBySpecialtyCounts(specialtyCounts)}
       </div>
     </div>
     <div class="panel">
       <div class="panel-header"><div><h3>Situação dos cadastros</h3><p>${activePatients.toLocaleString("pt-BR")} pacientes ativos cadastrados</p></div></div>
-      <div class="info-box">Os indicadores usam contagens do Firestore e as telas volumosas carregam apenas o trecho necessário.</div>
+      <div class="info-box">O painel usa consultas simples e cache temporário. Arquivo morto, agenda e relatórios continuam carregando somente o período ou a página necessária.</div>
     </div>`;
 }
 
@@ -874,7 +866,11 @@ function queueTable(items, actions = true) {
 }
 
 async function openReferralDialog(queueItem) {
-  const professionals = await readCollection("profissionais", [where("ativo", "==", true), where("especialidade", "==", queueItem.especialidade)], { cacheKey: `active-specialty:${queueItem.especialidade}`, ttl: 5 * 60_000 });
+  const professionals = (await readCollection("profissionais", [
+    where("especialidade", "==", queueItem.especialidade)
+  ], { cacheKey: `specialty:${queueItem.especialidade}`, ttl: 5 * 60_000 }))
+    .filter(item => item.ativo === true)
+    .sort((a, b) => String(a.nome || "").localeCompare(String(b.nome || ""), "pt-BR"));
   if (!professionals.length) {
     toast(`Não há profissional ativo cadastrado em ${queueItem.especialidade}.`, "error");
     return;
@@ -978,7 +974,9 @@ async function renderCare() {
       el.pageContent.innerHTML = emptyHTML("Acesso não vinculado", "Seu usuário ainda não está vinculado a um profissional.");
       return;
     }
-    care = await readCollection("atendimentos", [where("profissionalId", "==", state.profile.profissionalId), where("status", "in", ["ativo", "alta_solicitada"])], { cacheKey: `active-professional:${state.profile.profissionalId}`, ttl: 45_000 });
+    care = await readCollection("atendimentos", [
+      where("profissionalId", "==", state.profile.profissionalId)
+    ], { cacheKey: `professional:${state.profile.profissionalId}`, ttl: 45_000 });
   } else {
     care = await readCollection("atendimentos", [where("status", "in", ["ativo", "alta_solicitada"])], { cacheKey: "active-management", ttl: 45_000 });
   }
@@ -1097,7 +1095,7 @@ async function openArchiveDialog(item) {
     </div>`,
     onSubmit: async formData => {
       const archiveRef = doc(collection(db, "arquivoMorto"));
-      const appointments = await readCollection("agendamentos", [where("pacienteId", "==", patient.id), where("status", "==", "agendado"), limit(100)]);
+      const appointments = await readCollection("agendamentos", [where("pacienteId", "==", patient.id), limit(300)]);
       const batch = writeBatch(db);
       batch.set(archiveRef, {
         pacienteId: patient.id,
@@ -1164,11 +1162,13 @@ async function renderSchedule() {
   }
 
   const professionals = canManage()
-    ? (await readCollection("profissionais", [where("ativo", "==", true), orderBy("nomeBusca", "asc")], { cacheKey: "active-professionals", ttl: 5 * 60_000 }))
+    ? (await readCollection("profissionais", [where("ativo", "==", true)], { cacheKey: "active-professionals", ttl: 5 * 60_000 }))
+      .sort((a, b) => String(a.nome || "").localeCompare(String(b.nome || ""), "pt-BR"))
     : [];
 
   let appointments = [];
   let loadedKey = "";
+  let activeRange = null;
   let selectedDate = state.caches.scheduleDate || todayISO();
   let currentView = state.caches.scheduleView || "day";
 
@@ -1214,25 +1214,46 @@ async function renderSchedule() {
   };
 
   async function loadRange(range, force = false) {
-    const selectedProfessional = isProfessional() ? state.profile.profissionalId : (controls.professional?.value || "");
-    const key = `${selectedProfessional || "all"}:${range.start}:${range.end}`;
+    activeRange = range;
+    const professionalId = state.profile?.profissionalId || "";
+    const key = isProfessional()
+      ? `professional:${professionalId}`
+      : `range:${range.start}:${range.end}`;
     if (!force && key === loadedKey) return;
-    controls.panel.innerHTML = loadingHTML("Carregando somente o período selecionado...");
-    const constraints = [];
-    if (selectedProfessional) constraints.push(where("profissionalId", "==", selectedProfessional));
-    constraints.push(where("data", ">=", range.start), where("data", "<=", range.end), orderBy("data", "asc"), orderBy("horario", "asc"));
-    appointments = await readCollection("agendamentos", constraints, { cacheKey: `schedule:${key}`, ttl: 60_000, force });
+    controls.panel.innerHTML = loadingHTML("Carregando a agenda com consultas compatíveis...");
+    if (isProfessional()) {
+      // As regras exigem que o profissional consulte somente seus próprios
+      // documentos. Uma única igualdade usa índice automático; o período é
+      // aplicado localmente e o resultado fica em cache.
+      appointments = await readCollection("agendamentos", [
+        where("profissionalId", "==", professionalId),
+        limit(2000)
+      ], { cacheKey: `schedule:${key}`, ttl: 2 * 60_000, force });
+    } else {
+      // Administração e recepção consultam somente o intervalo aberto.
+      // Não há segundo orderBy nem filtro adicional, evitando índice composto.
+      appointments = await readCollection("agendamentos", [
+        where("data", ">=", range.start),
+        where("data", "<=", range.end),
+        orderBy("data", "asc")
+      ], { cacheKey: `schedule:${key}`, ttl: 60_000, force });
+    }
     state.caches.schedule = appointments;
     loadedKey = key;
   }
 
   const filteredAppointments = () => {
+    const selectedProfessional = isProfessional() ? state.profile.profissionalId : (controls.professional?.value || "");
     const specialty = controls.specialty.value;
     const status = controls.status.value;
     const term = normalize(controls.search.value);
-    return appointments.filter(item => (!specialty || item.especialidade === specialty)
+    return appointments.filter(item =>
+      (!activeRange || (item.data >= activeRange.start && item.data <= activeRange.end))
+      && (!selectedProfessional || item.profissionalId === selectedProfessional)
+      && (!specialty || item.especialidade === specialty)
       && (!status || item.status === status)
-      && (!term || normalize(`${item.pacienteNome} ${item.profissionalNome} ${item.especialidade} ${item.observacoes || ""}`).includes(term)));
+      && (!term || normalize(`${item.pacienteNome} ${item.profissionalNome} ${item.especialidade} ${item.observacoes || ""}`).includes(term))
+    );
   };
 
   async function apply(force = false) {
@@ -1267,7 +1288,7 @@ async function renderSchedule() {
   document.querySelector("#schedule-today").addEventListener("click", async () => { selectedDate = todayISO(); loadedKey = ""; await apply(); });
   controls.date.addEventListener("change", async () => { selectedDate = controls.date.value || todayISO(); loadedKey = ""; await apply(); });
   document.querySelectorAll("[data-schedule-view]").forEach(button => button.addEventListener("click", async () => { currentView = button.dataset.scheduleView; loadedKey = ""; await apply(); }));
-  controls.professional?.addEventListener("change", async () => { loadedKey = ""; await apply(); });
+  controls.professional?.addEventListener("change", async () => { await apply(); });
   [controls.specialty, controls.status].forEach(control => control.addEventListener("change", () => apply()));
   controls.search.addEventListener("input", debounce(() => apply(), 250));
   document.querySelector("#schedule-clear-filters").addEventListener("click", async () => {
@@ -2534,12 +2555,16 @@ async function resetUser(item) {
 
 async function renderArchive() {
   const pageSize = 50;
+  const scanSize = 151;
   const fixedSpecialties = [...Object.keys(SPECIALTIES), "Terapia Ocupacional", "Equoterapia", "Grupo", "Não identificado"];
-  const [total, legacyCount, manualCount] = await Promise.all([
+  // Cada contagem usa somente um campo. Não há dependência de índice composto.
+  const [total, legacyRaw, manualRaw] = await Promise.all([
     countCollection("arquivoMorto", [where("status", "==", "arquivado")]),
-    countCollection("arquivoMorto", [where("status", "==", "arquivado"), where("origem", "==", "legado_docx")]),
-    countCollection("arquivoMorto", [where("status", "==", "arquivado"), where("origem", "==", "cadastro_manual")])
+    countCollection("arquivoMorto", [where("origem", "==", "legado_docx")]),
+    countCollection("arquivoMorto", [where("origem", "==", "cadastro_manual")])
   ]);
+  const legacyCount = Math.min(total, legacyRaw);
+  const manualCount = Math.min(Math.max(0, total - legacyCount), manualRaw);
   const systemCount = Math.max(0, total - legacyCount - manualCount);
 
   el.pageContent.innerHTML = `
@@ -2561,7 +2586,7 @@ async function renderArchive() {
         ${canManage() ? `<button class="primary-button" type="button" data-action="manual-archive">+ Adicionar manualmente</button>` : ""}
       </div>
     </div>
-    <div class="optimization-note"><strong>Leituras reduzidas:</strong> o arquivo morto carrega somente 50 registros por vez. A busca é feita no servidor por início do nome, prontuário exato ou telefone exato.</div>
+    <div class="optimization-note"><strong>Compatível sem índices compostos:</strong> o arquivo morto consulta um único campo por vez, aplica os demais filtros localmente e exibe no máximo 50 registros por página.</div>
     <div class="panel archive-panel" id="archive-panel">${loadingHTML("Carregando a primeira página...")}</div>`;
 
   const panel = document.querySelector("#archive-panel");
@@ -2572,49 +2597,89 @@ async function renderArchive() {
   let cursors = [null];
   let currentItems = [];
 
-  function buildConstraints(cursor = null, withLimit = true) {
+  function buildSingleIndexConstraints(cursor = null) {
     const termRaw = searchInput.value.trim();
     const term = normalize(termRaw);
     const digits = onlyDigits(termRaw);
-    const constraints = [where("status", "==", "arquivado")];
-    const numericSearch = Boolean(termRaw && digits.length);
-    // Para buscas numéricas, evitamos combinar dois filtros array-contains, algo não suportado pelo Firestore.
-    if (!numericSearch && originInput.value) constraints.push(where("origem", "==", originInput.value));
-    if (!numericSearch && specialtyInput.value) constraints.push(where("especialidades", "array-contains", specialtyInput.value));
+    const constraints = [];
 
-    if (termRaw) {
-      if (digits.length >= 8) constraints.push(where("telefones", "array-contains", digits));
-      else if (digits.length) constraints.push(where("numeroProntuario", "==", termRaw));
-      else constraints.push(orderBy("pacienteNomeBusca", "asc"), startAt(term), endAt(`${term}\uf8ff`));
+    if (termRaw && digits.length >= 8) {
+      constraints.push(where("telefones", "array-contains", digits));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else if (termRaw && digits.length) {
+      constraints.push(where("numeroProntuario", "==", termRaw));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else if (termRaw) {
+      constraints.push(orderBy("pacienteNomeBusca", "asc"));
+      if (cursor) constraints.push(startAfter(cursor));
+      else constraints.push(startAt(term));
+      constraints.push(endAt(`${term}\uf8ff`));
+    } else if (originInput.value) {
+      constraints.push(where("origem", "==", originInput.value));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else if (specialtyInput.value) {
+      constraints.push(where("especialidades", "array-contains", specialtyInput.value));
+      if (cursor) constraints.push(startAfter(cursor));
     } else {
       constraints.push(orderBy("pacienteNomeBusca", "asc"));
+      if (cursor) constraints.push(startAfter(cursor));
     }
-    if (cursor) constraints.push(startAfter(cursor));
-    if (withLimit) constraints.push(limit(pageSize + 1));
+
+    constraints.push(limit(scanSize));
     return constraints;
   }
 
-  async function loadPage(reset = false) {
-    if (reset) { page = 1; cursors = [null]; }
-    panel.innerHTML = loadingHTML("Buscando somente os registros desta página...");
-    const cursor = cursors[page - 1] || null;
-    const [result, count] = await Promise.all([
-      readQueryPage("arquivoMorto", buildConstraints(cursor, true)),
-      countCollection("arquivoMorto", buildConstraints(null, false))
-    ]);
-    const hasNext = result.items.length > pageSize;
-    currentItems = result.items.slice(0, pageSize);
-    if (searchInput.value.trim() && onlyDigits(searchInput.value).length) {
-      currentItems = currentItems.filter(item => (!originInput.value || item.origem === originInput.value)
-        && (!specialtyInput.value || archiveSpecialties(item).includes(specialtyInput.value)));
-    }
-    state.caches.archive = currentItems;
-    state.caches.archiveFiltered = currentItems;
-    if (hasNext) cursors[page] = result.docs[pageSize - 1];
-    panel.innerHTML = archiveTable(currentItems, page, pageSize, count, hasNext);
+  function matchesLocalFilters(item) {
+    if (item.status !== "arquivado") return false;
+    const origin = originInput.value;
+    if (origin && item.origem !== origin) return false;
+    const specialty = specialtyInput.value;
+    if (specialty && !archiveSpecialties(item).includes(specialty)) return false;
+
+    const termRaw = searchInput.value.trim();
+    if (!termRaw) return true;
+    const digits = onlyDigits(termRaw);
+    if (digits.length >= 8) return archivePhone(item).split(" / ").some(phone => onlyDigits(phone) === digits);
+    if (digits.length) return String(archiveValue(item, "numeroProntuario") || "") === termRaw;
+    return normalize(item.pacienteNome || archiveValue(item, "nome")).startsWith(normalize(termRaw));
   }
 
-  const resetAndLoad = debounce(() => loadPage(true).catch(error => { console.error(error); panel.innerHTML = emptyHTML("Não foi possível carregar", authErrorMessage(error)); }), 500);
+  async function loadPage(reset = false) {
+    if (reset) {
+      page = 1;
+      cursors = [null];
+    }
+    panel.innerHTML = loadingHTML("Buscando somente um bloco reduzido de registros...");
+    const cursor = cursors[page - 1] || null;
+    const result = await readQueryPage("arquivoMorto", buildSingleIndexConstraints(cursor));
+    const matches = result.items
+      .map((item, index) => ({ item, index }))
+      .filter(entry => matchesLocalFilters(entry.item));
+
+    const displayedEntries = matches.slice(0, pageSize);
+    currentItems = displayedEntries.map(entry => entry.item);
+    const hasMoreMatchesInBlock = matches.length > pageSize;
+    const sourceMayContinue = result.size === scanSize;
+    const hasNext = hasMoreMatchesInBlock || sourceMayContinue;
+
+    if (hasNext) {
+      const cursorIndex = displayedEntries.length === pageSize
+        ? displayedEntries.at(-1).index
+        : Math.max(0, result.docs.length - 1);
+      cursors[page] = result.docs[cursorIndex] || result.lastDoc;
+    }
+
+    state.caches.archive = currentItems;
+    state.caches.archiveFiltered = currentItems;
+    const noFilters = !searchInput.value.trim() && !originInput.value && !specialtyInput.value;
+    panel.innerHTML = archiveTable(currentItems, page, pageSize, noFilters ? total : null, hasNext);
+  }
+
+  const resetAndLoad = debounce(() => loadPage(true).catch(error => {
+    console.error(error);
+    panel.innerHTML = emptyHTML("Não foi possível carregar", authErrorMessage(error));
+  }), 500);
+
   searchInput.addEventListener("input", resetAndLoad);
   originInput.addEventListener("change", () => loadPage(true));
   specialtyInput.addEventListener("change", () => loadPage(true));
@@ -2628,7 +2693,6 @@ async function renderArchive() {
   });
   await loadPage(true);
 }
-
 
 
 function archiveIsLegacy(item) {
@@ -2692,8 +2756,11 @@ function archiveOriginLabel(item) {
 function archiveTable(items, page = 1, pageSize = 50, totalCount = items.length, hasNext = false) {
   if (!items.length) return emptyHTML("Nenhum registro encontrado", "Altere os filtros ou importe o arquivo histórico.");
   const start = (page - 1) * pageSize;
+  const totalLabel = Number.isFinite(totalCount)
+    ? `${Number(totalCount).toLocaleString("pt-BR")} registros`
+    : `${items.length}${hasNext ? "+" : ""} resultado(s) neste bloco`;
   return `<div class="archive-result-heading">
-      <div><strong>${Number(totalCount).toLocaleString("pt-BR")} registros</strong><span>Exibindo ${start + 1}–${start + items.length}</span></div>
+      <div><strong>${totalLabel}</strong><span>Exibindo ${start + 1}–${start + items.length}</span></div>
       <small>Página ${page}</small>
     </div>
     <div class="table-wrap"><table class="archive-table"><thead><tr>
@@ -3308,7 +3375,7 @@ el.installButton.addEventListener("click", async () => {
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   try {
-    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.7.1");
+    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.8.0");
     if (state.registration.waiting) el.updateBanner.classList.remove("hidden");
     state.registration.addEventListener("updatefound", () => {
       const worker = state.registration.installing;

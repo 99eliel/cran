@@ -1,0 +1,34 @@
+SISTEMA CRAN v1.8.0 — CORREÇÃO DEFINITIVA DOS ERROS DE ÍNDICE
+
+Esta versão foi reestruturada para que as telas principais não dependam de índices compostos do Firestore.
+
+CORREÇÕES
+- Painel sem consultas compostas.
+- Agenda diária, semanal e mensal usando somente consultas por período ou por profissional.
+- Arquivo morto com paginação de 50 registros e somente um filtro do Firestore por consulta.
+- Filtros adicionais do arquivo morto aplicados localmente no bloco já carregado.
+- Encaminhamento, pacientes em atendimento e verificação de conflito da agenda sem combinação de índices.
+- Relatórios mantidos com consultas por uma única propriedade ou por intervalo da mesma data.
+
+NÃO É NECESSÁRIO
+- Criar índice manual pelo link de erro.
+- Executar firebase deploy --only firestore:indexes.
+- Aguardar índice composto ficar ativo.
+
+COMO TESTAR
+1. Substitua todos os arquivos antigos pelos arquivos desta versão.
+2. Abra o sistema pelo Live Server.
+3. Pressione Ctrl + Shift + R.
+4. Caso ainda apareça o código anterior: F12 > Application > Storage > Clear site data.
+5. Teste Painel, Agenda, Arquivo morto, Em atendimento e Relatórios.
+
+PUBLICAÇÃO
+Para publicar somente o site:
+
+firebase deploy --only hosting
+
+Para publicar o site e as regras:
+
+firebase deploy
+
+Nenhum desses comandos apaga pacientes ou registros existentes.
