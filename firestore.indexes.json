@@ -1,16 +1,44 @@
 {
   "indexes": [
     {
-      "collectionGroup": "filaEspera",
+      "collectionGroup": "agendamentos",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "status",
+          "fieldPath": "data",
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "dataEntrada",
-          "order": "DESCENDING"
+          "fieldPath": "horario",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "agendamentos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "data",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "agendamentos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "pacienteId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
         }
       ]
     },
@@ -41,15 +69,11 @@
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "status",
-          "order": "ASCENDING"
-        },
-        {
           "fieldPath": "data",
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "horario",
+          "fieldPath": "status",
           "order": "ASCENDING"
         }
       ]
@@ -59,6 +83,14 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "profissionalId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "data",
           "order": "ASCENDING"
         },
@@ -73,19 +105,9 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "status",
-          "order": "ASCENDING"
+          "fieldPath": "especialidades",
+          "arrayConfig": "CONTAINS"
         },
-        {
-          "fieldPath": "pacienteNomeBusca",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "arquivoMorto",
-      "queryScope": "COLLECTION",
-      "fields": [
         {
           "fieldPath": "status",
           "order": "ASCENDING"
@@ -123,9 +145,19 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "especialidades",
-          "arrayConfig": "CONTAINS"
+          "fieldPath": "status",
+          "order": "ASCENDING"
         },
+        {
+          "fieldPath": "numeroProntuario",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "arquivoMorto",
+      "queryScope": "COLLECTION",
+      "fields": [
         {
           "fieldPath": "status",
           "order": "ASCENDING"
@@ -136,6 +168,48 @@
         },
         {
           "fieldPath": "pacienteNomeBusca",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "arquivoMorto",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "origem",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "arquivoMorto",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "pacienteNomeBusca",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "arquivoMorto",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "telefones",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "status",
           "order": "ASCENDING"
         }
       ]
@@ -155,11 +229,67 @@
       ]
     },
     {
+      "collectionGroup": "filaEspera",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "classificacao",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "filaEspera",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dataEntrada",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "filaEspera",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "especialidade",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "pacientes",
       "queryScope": "COLLECTION",
       "fields": [
         {
           "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "especialidade",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "profissionais",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ativo",
           "order": "ASCENDING"
         },
         {

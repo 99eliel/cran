@@ -1,0 +1,28 @@
+SISTEMA CRAN v1.7.1 — CORREÇÃO DO PAINEL
+
+O erro “The query requires an index” não é perda de dados nem quebra do Firebase.
+Ele acontece porque a versão otimizada passou a usar consultas econômicas que precisam de índices compostos.
+
+CORREÇÃO OBRIGATÓRIA (uma única vez)
+
+1. Abra o terminal do VS Code dentro desta pasta.
+2. Confirme que está conectado ao projeto cran2026:
+
+   firebase use cran2026
+
+3. Publique somente os índices:
+
+   firebase deploy --only firestore:indexes
+
+4. Aguarde os índices aparecerem como “Ativado” no Console Firebase:
+   Firestore Database > Índices > Compostos
+
+Você também pode publicar regras e índices juntos:
+
+   firebase deploy --only firestore
+
+IMPORTANTE
+- O site pode ser testado pelo Live Server normalmente.
+- O comando acima não publica o site e não altera os dados.
+- A criação dos índices pode levar alguns minutos.
+- Esta versão 1.7.1 impede que um índice pendente derrube o painel inteiro; indicadores ainda pendentes aparecem temporariamente como zero.

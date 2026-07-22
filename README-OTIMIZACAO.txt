@@ -1,4 +1,4 @@
-SISTEMA CRAN v1.7.0 — OTIMIZAÇÃO DE LEITURAS
+SISTEMA CRAN v1.7.1 — OTIMIZAÇÃO DE LEITURAS
 
 PRINCIPAIS MUDANÇAS
 - Arquivo morto: 50 documentos por página usando cursor do Firestore.

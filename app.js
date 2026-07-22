@@ -29,7 +29,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.7.1";
 
 const SPECIALTIES = {
   "Fisioterapia": {
@@ -248,7 +248,9 @@ function authErrorMessage(error) {
     "auth/email-already-in-use": "Este e-mail já possui uma conta.",
     "auth/weak-password": "A senha deve ter pelo menos 6 caracteres.",
     "auth/invalid-email": "Informe um e-mail válido.",
-    "permission-denied": "Você não tem permissão para realizar esta ação."
+    "permission-denied": "Você não tem permissão para realizar esta ação.",
+    "failed-precondition": "O Firebase ainda não possui um índice necessário. Publique os índices do projeto e tente novamente.",
+    "firestore/failed-precondition": "O Firebase ainda não possui um índice necessário. Publique os índices do projeto e tente novamente."
   };
   return messages[error?.code] || error?.message || "Não foi possível concluir a operação.";
 }
@@ -522,21 +524,42 @@ async function renderDashboard() {
     return;
   }
 
-  const specialtyEntries = await Promise.all(Object.keys(SPECIALTIES).map(async name => [name, await countCollection("filaEspera", [
-    where("status", "==", "aguardando"),
-    where("especialidade", "==", name)
-  ])]));
+  // O painel não deve ficar inutilizável caso algum índice ainda esteja em criação.
+  // Cada indicador falha isoladamente e volta a funcionar automaticamente após a publicação dos índices.
+  const safeDashboardValue = async (promise, fallback, label) => {
+    try {
+      return await promise;
+    } catch (error) {
+      console.warn(`Indicador indisponível (${label}):`, error);
+      return fallback;
+    }
+  };
+
+  const specialtyEntries = await Promise.all(Object.keys(SPECIALTIES).map(async name => [
+    name,
+    await safeDashboardValue(countCollection("filaEspera", [
+      where("status", "==", "aguardando"),
+      where("especialidade", "==", name)
+    ]), 0, `fila-${name}`)
+  ]));
   const specialtyCounts = Object.fromEntries(specialtyEntries);
-  const [waiting, urgent, activeCare, todayAppointments, activeProfessionals, archived, activePatients, recentQueue] = await Promise.all([
-    countCollection("filaEspera", [where("status", "==", "aguardando")]),
-    countCollection("filaEspera", [where("status", "==", "aguardando"), where("classificacao", "==", "Urgência")]),
-    countCollection("atendimentos", [where("status", "in", ["ativo", "alta_solicitada"])]),
-    countCollection("agendamentos", [where("data", "==", todayISO()), where("status", "==", "agendado")]),
-    countCollection("profissionais", [where("ativo", "==", true)]),
-    countCollection("arquivoMorto", [where("status", "==", "arquivado")]),
-    countCollection("pacientes", [where("status", "!=", "arquivo_morto")]),
-    readCollection("filaEspera", [where("status", "==", "aguardando"), orderBy("dataEntrada", "desc"), limit(7)], { cacheKey: "dashboard-recent-queue", ttl: 60_000 })
+
+  const [waiting, urgent, activeCare, todayAppointments, activeProfessionals, archived, activePatients, recentQueueRaw] = await Promise.all([
+    safeDashboardValue(countCollection("filaEspera", [where("status", "==", "aguardando")]), 0, "fila-total"),
+    safeDashboardValue(countCollection("filaEspera", [where("status", "==", "aguardando"), where("classificacao", "==", "Urgência")]), 0, "fila-urgente"),
+    safeDashboardValue(countCollection("atendimentos", [where("status", "in", ["ativo", "alta_solicitada"])]), 0, "atendimentos-ativos"),
+    safeDashboardValue(countCollection("agendamentos", [where("data", "==", todayISO()), where("status", "==", "agendado")]), 0, "agenda-hoje"),
+    safeDashboardValue(countCollection("profissionais", [where("ativo", "==", true)]), 0, "profissionais-ativos"),
+    safeDashboardValue(countCollection("arquivoMorto", [where("status", "==", "arquivado")]), 0, "arquivo-morto"),
+    safeDashboardValue(countCollection("pacientes", [where("status", "!=", "arquivo_morto")]), 0, "pacientes-ativos"),
+    // Consulta somente os 25 registros mais recentes e filtra aguardando localmente.
+    // Assim o painel abre mesmo antes do índice status + dataEntrada ficar pronto.
+    safeDashboardValue(readCollection("filaEspera", [orderBy("dataEntrada", "desc"), limit(25)], {
+      cacheKey: "dashboard-recent-queue-v171",
+      ttl: 60_000
+    }), [], "fila-recente")
   ]);
+  const recentQueue = recentQueueRaw.filter(item => item.status === "aguardando").slice(0, 7);
 
   el.pageContent.innerHTML = `
     ${welcomeBlock()}
@@ -3285,7 +3308,7 @@ el.installButton.addEventListener("click", async () => {
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   try {
-    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.7.0");
+    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.7.1");
     if (state.registration.waiting) el.updateBanner.classList.remove("hidden");
     state.registration.addEventListener("updatefound", () => {
       const worker = state.registration.installing;

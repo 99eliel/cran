@@ -1,4 +1,4 @@
-SISTEMA CRAN — VERSÃO 1.7.0
+SISTEMA CRAN — VERSÃO 1.7.1
 Projeto Firebase: cran2026
 
 PRINCIPAIS MÓDULOS
@@ -13,7 +13,7 @@ PRINCIPAIS MÓDULOS
 - PWA instalável e atualização automática.
 
 
-NOVIDADES DA VERSÃO 1.7.0 — CADASTRO MANUAL NO ARQUIVO MORTO
+NOVIDADES DA VERSÃO 1.7.1 — CADASTRO MANUAL NO ARQUIVO MORTO
 - Novo botão “Adicionar manualmente” na aba Arquivo morto.
 - Disponível para administrador e recepção.
 - Cadastro de nome, prontuário, data, condição, atendimento, especialidades, telefones, motivo e observações.
