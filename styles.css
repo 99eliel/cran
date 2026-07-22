@@ -923,3 +923,14 @@ td strong { color: var(--text-strong); }
   .condition-tags { min-width: 0; }
   .actions-cell .table-button { flex: 1 1 auto; }
 }
+
+
+/* v2.1.0 — Regulação justa */
+.queue-toolbar-actions { display:flex; gap:9px; flex-wrap:wrap; justify-content:flex-end; }
+.queue-rules-panel { margin:0 0 14px; padding:14px 16px; border:1px solid #B8DADF; border-left:5px solid #0E7490; border-radius:14px; background:#EFFAFC; color:#244E57; line-height:1.55; }
+.queue-position { display:inline-flex; min-width:42px; justify-content:center; padding:6px 9px; border-radius:999px; background:#E8F3F5; color:#0F4C5C; font-weight:800; }
+.queue-score { margin-top:7px; color:#0F4C5C; font-size:12px; font-weight:800; }
+.checkbox-field { display:flex !important; flex-direction:row !important; align-items:center; gap:10px; min-height:44px; }
+.checkbox-field input { width:18px; height:18px; margin:0; }
+.checkbox-field span { font-weight:700; color:#314E54; }
+@media (max-width: 760px) { .queue-toolbar-actions { width:100%; } .queue-toolbar-actions button { flex:1; } }

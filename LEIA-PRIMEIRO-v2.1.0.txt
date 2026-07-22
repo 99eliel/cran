@@ -1,0 +1,18 @@
+SISTEMA CRAN v2.1.0 — REGULAÇÃO JUSTA
+
+REGRAS DA FILA
+1. Urgência clínica.
+2. Prioritário: pós-operatório, AVC e respiratório.
+3. Eletivo.
+4. Dentro do mesmo nível: prioridade legal informada e data mais antiga.
+5. Dados incompletos não reduzem a posição.
+
+MIGRAÇÃO
+Use somente: fila-espera-cran-2026-regulacao-justa-v3.json
+
+CORREÇÕES
+- Todos os registros entram com classificação pronta.
+- A fila possui pontuação e chave de ordenação global.
+- É possível editar classificação, prioridade legal, data e justificativa.
+- O botão Cancelar e o X são reativados em todo formulário; o bug após migrações foi corrigido.
+- O administrador pode usar o botão Reorganizar fila para registros já existentes.

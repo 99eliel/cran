@@ -48,3 +48,6 @@ Para publicar também as regras:
 firebase deploy
 
 Não é necessário publicar índices compostos para esta versão.
+
+
+REGULAÇÃO JUSTA: veja LEIA-PRIMEIRO-v2.1.0.txt.

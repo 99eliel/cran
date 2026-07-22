@@ -29,38 +29,38 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
-    tipos: ["Geral", "Pós-operatório", "AVC", "Respiratório", "Não informado"],
-    modalidades: ["Presencial", "Domiciliar", "Não informado"]
+    tipos: ["Geral", "Pós-operatório", "AVC", "Respiratório"],
+    modalidades: ["Presencial", "Domiciliar"]
   },
   "Psicologia": {
-    tipos: ["Adulto", "Infantil", "Não informado"],
-    modalidades: ["Presencial", "Não informado"]
+    tipos: ["Adulto", "Infantil"],
+    modalidades: ["Presencial"]
   },
   "Fonoaudiologia": {
-    tipos: ["Geral", "Não informado"],
-    modalidades: ["Presencial", "Domiciliar", "Não informado"]
+    tipos: ["Geral"],
+    modalidades: ["Presencial", "Domiciliar"]
   },
   "Nutrição": {
-    tipos: ["Geral", "Não informado"],
-    modalidades: ["Presencial", "Domiciliar", "Não informado"]
+    tipos: ["Geral"],
+    modalidades: ["Presencial", "Domiciliar"]
   },
   "Auriculoterapia": {
-    tipos: ["Geral", "Não informado"],
-    modalidades: ["Presencial", "Não informado"]
+    tipos: ["Geral"],
+    modalidades: ["Presencial"]
   },
   "Academia": {
-    tipos: ["Geral", "Não informado"],
-    modalidades: ["Presencial", "Não informado"]
+    tipos: ["Geral"],
+    modalidades: ["Presencial"]
   }
 };
 
 const CLASSIFICATIONS = ["Urgência", "Prioritário", "Eletivo", "Não se aplica", "Não informado"];
-const WAITING_LIST_MIGRATION_ID = "cran_filas_espera_2026_v2_condicoes";
-const LEGACY_WAITING_LIST_MIGRATION_ID = "cran_filas_espera_2026_v1";
+const WAITING_LIST_MIGRATION_ID = "cran_filas_espera_2026_v3_regulacao_justa";
+const LEGACY_WAITING_LIST_MIGRATION_IDS = ["cran_filas_espera_2026_v2_condicoes", "cran_filas_espera_2026_v1"];
 const QUEUE_CONDITIONS = [
   "Urgência",
   "Prioritário",
@@ -451,13 +451,21 @@ async function renderCurrentPage() {
   }
 }
 
+function resetDialogControls() {
+  const closeButton = document.querySelector("#dialog-close");
+  const cancelButton = document.querySelector("#dialog-cancel");
+  if (closeButton) closeButton.disabled = false;
+  if (cancelButton) cancelButton.disabled = false;
+  el.dialogSubmit.disabled = false;
+}
+
 function openDialog({ title, description = "", body, submitLabel = "Salvar", onSubmit, afterOpen }) {
+  resetDialogControls();
   el.dialogTitle.textContent = title;
   el.dialogDescription.textContent = description;
   el.dialogDescription.classList.toggle("hidden", !description);
   el.dialogBody.innerHTML = body;
   el.dialogSubmit.textContent = submitLabel;
-  el.dialogSubmit.disabled = false;
   dialogHandler = onSubmit;
   dialogAfterOpen = afterOpen;
   el.dialog.showModal();
@@ -465,6 +473,7 @@ function openDialog({ title, description = "", body, submitLabel = "Salvar", onS
 }
 
 function closeDialog() {
+  resetDialogControls();
   if (el.dialog.open) el.dialog.close("cancel");
   dialogHandler = null;
   dialogAfterOpen = null;
@@ -519,6 +528,138 @@ function queueConditionBadges(item = {}) {
 function queueDateISO(value) {
   const date = timestampToDate(value);
   return date ? dateToISO(date) : "";
+}
+
+
+function queueClassificationOptions(selected = "Eletivo") {
+  return ["Urgência", "Prioritário", "Eletivo"]
+    .map(name => `<option value="${escapeHTML(name)}" ${name === selected ? "selected" : ""}>${escapeHTML(name)}</option>`)
+    .join("");
+}
+
+function deriveQueueClassification(item = {}) {
+  const current = String(item.classificacao || "").trim();
+  if (["Urgência", "Prioritário", "Eletivo"].includes(current)) return current;
+  const conditions = Array.isArray(item.condicoesFila) ? item.condicoesFila : [];
+  if (conditions.includes("Urgência")) return "Urgência";
+  if (["Pós-operatório", "AVC", "Respiratório"].includes(item.tipoAtendimento)) return "Prioritário";
+  return "Eletivo";
+}
+
+function automaticPriorityReason(item = {}) {
+  const classification = deriveQueueClassification(item);
+  if (classification === "Urgência") return "Urgência clínica registrada.";
+  if (item.tipoAtendimento === "Pós-operatório") return "Pós-operatório com janela terapêutica.";
+  if (item.tipoAtendimento === "AVC") return "Reabilitação após AVC com janela terapêutica.";
+  if (item.tipoAtendimento === "Respiratório") return "Condição respiratória priorizada.";
+  if (classification === "Prioritário") return "Classificação prioritária definida pelo regulador.";
+  return "Atendimento eletivo, ordenado pelo tempo de espera.";
+}
+
+function queuePriorityScore(item = {}) {
+  const classification = deriveQueueClassification(item);
+  const base = { "Urgência": 300, "Prioritário": 200, "Eletivo": 100 }[classification] || 100;
+  const therapeutic = ["Pós-operatório", "AVC"].includes(item.tipoAtendimento)
+    ? 20
+    : item.tipoAtendimento === "Respiratório" ? 15 : 0;
+  const legal = item.prioridadeLegal === true ? 10 : 0;
+  const adjustment = Math.max(-30, Math.min(30, Number(item.ajusteRegulador || 0)));
+  return base + therapeutic + legal + adjustment;
+}
+
+function queueOrderingKey(item = {}, active = true) {
+  const score = queuePriorityScore(item);
+  const inverseScore = String(Math.max(0, 9999 - score)).padStart(4, "0");
+  const legalRank = item.prioridadeLegal === true ? "0" : "1";
+  const date = queueDateISO(item.dataEntrada) || String(item.dataEntrada || "").slice(0, 10) || todayISO();
+  const dateKey = date.replaceAll("-", "").padEnd(8, "9");
+  const numberDigits = onlyDigits(item.numeroListaOriginal || "");
+  const numberKey = numberDigits ? numberDigits.padStart(6, "0").slice(-6) : "999999";
+  const suffix = String(item.chaveFila || item.id || normalize(item.pacienteNome || "paciente")).replaceAll("|", "_");
+  return `${active ? "A" : "Z"}|${inverseScore}|${legalRank}|${dateKey}|${numberKey}|${suffix}`;
+}
+
+function queueRegulationFields(item = {}, { manual = false } = {}) {
+  const classification = deriveQueueClassification(item);
+  const normalized = {
+    ...item,
+    classificacao: classification,
+    tipoAtendimento: item.tipoAtendimento && item.tipoAtendimento !== "Não informado"
+      ? item.tipoAtendimento
+      : item.especialidade === "Psicologia" ? "Adulto" : "Geral",
+    modalidade: item.modalidade === "Domiciliar" ? "Domiciliar" : "Presencial"
+  };
+  normalized.condicoesFila = queueConditionsFromFields(normalized);
+  normalized.condicaoPrincipal = classification;
+  normalized.pontuacaoFila = queuePriorityScore(normalized);
+  normalized.motivoPrioridade = String(item.motivoPrioridade || automaticPriorityReason(normalized)).trim();
+  normalized.classificacaoOrigem = manual ? "manual" : (item.classificacaoOrigem || "automatica");
+  normalized.prioridadeLegal = item.prioridadeLegal === true;
+  normalized.ajusteRegulador = Math.max(-30, Math.min(30, Number(item.ajusteRegulador || 0)));
+  normalized.chaveOrdenacaoFila = queueOrderingKey(normalized, item.status !== "encaminhado" && item.status !== "retirado");
+  return {
+    classificacao: normalized.classificacao,
+    tipoAtendimento: normalized.tipoAtendimento,
+    modalidade: normalized.modalidade,
+    condicoesFila: normalized.condicoesFila,
+    condicaoPrincipal: normalized.condicaoPrincipal,
+    pontuacaoFila: normalized.pontuacaoFila,
+    motivoPrioridade: normalized.motivoPrioridade,
+    classificacaoOrigem: normalized.classificacaoOrigem,
+    prioridadeLegal: normalized.prioridadeLegal,
+    ajusteRegulador: normalized.ajusteRegulador,
+    chaveOrdenacaoFila: normalized.chaveOrdenacaoFila
+  };
+}
+
+function queueRankComparator(a, b) {
+  const score = queuePriorityScore(b) - queuePriorityScore(a);
+  if (score !== 0) return score;
+  const legal = Number(b.prioridadeLegal === true) - Number(a.prioridadeLegal === true);
+  if (legal !== 0) return legal;
+  const da = timestampToDate(a.dataEntrada)?.getTime() ?? Number.POSITIVE_INFINITY;
+  const db = timestampToDate(b.dataEntrada)?.getTime() ?? Number.POSITIVE_INFINITY;
+  if (da !== db) return da - db;
+  return Number(a.numeroListaOriginal || 999999) - Number(b.numeroListaOriginal || 999999);
+}
+
+async function recalculateWaitingListOrder({ silent = false } = {}) {
+  const snapshot = await getDocs(query(collection(db, "filaEspera"), where("status", "==", "aguardando")));
+  const docs = snapshot.docs;
+  const batchSize = 400;
+  for (let offset = 0; offset < docs.length; offset += batchSize) {
+    const batch = writeBatch(db);
+    docs.slice(offset, offset + batchSize).forEach(queueDoc => {
+      const item = { id: queueDoc.id, ...queueDoc.data() };
+      batch.update(queueDoc.ref, {
+        ...queueRegulationFields(item),
+        atualizadoEm: serverTimestamp(),
+        atualizadoPor: state.user.uid
+      });
+    });
+    await batch.commit();
+  }
+  invalidateDataCache("filaEspera:", "reports-queue:");
+  state.caches.queue = [];
+  if (!silent) toast(`${docs.length.toLocaleString("pt-BR")} entradas foram organizadas pela regra justa.`);
+  return docs.length;
+}
+
+function openQueueReorderDialog() {
+  openDialog({
+    title: "Reorganizar a fila",
+    description: "Aplica a regra justa a todos os pacientes que ainda estão aguardando.",
+    submitLabel: "Reorganizar agora",
+    body: `<div class="form-grid">
+      <div class="info-box span-2"><strong>Ordem aplicada:</strong><br>1. Urgência<br>2. Prioritário (pós-operatório, AVC e respiratório)<br>3. Eletivo<br><br>Dentro do mesmo nível: prioridade legal informada e depois a data mais antiga.</div>
+      <label class="span-2 migration-confirmation"><input name="confirmReorder" type="checkbox" value="yes"><span>Confirmo a reorganização dos pacientes que ainda estão aguardando.</span></label>
+    </div>`,
+    onSubmit: async formData => {
+      if (formValue(formData, "confirmReorder") !== "yes") throw new Error("Marque a confirmação.");
+      await recalculateWaitingListOrder();
+      await renderQueue();
+    }
+  });
 }
 
 function updateSpecialtyFields(prefix = "") {
@@ -779,7 +920,7 @@ async function renderPatients() {
     const displayed = matchesInBlock.slice(0, pageSize);
     const items = displayed.map(entry => entry.item);
     const hasMoreInBlock = matchesInBlock.length > pageSize;
-    const hasMoreSource = result.size === scanSize;
+    const hasMoreSource = result.size === built.scanSize;
     const hasNext = hasMoreInBlock || hasMoreSource;
     if (hasNext) {
       const cursorIndex = displayed.length === pageSize ? displayed.at(-1).index : Math.max(0, result.docs.length - 1);
@@ -931,8 +1072,10 @@ async function openQueueDialog(patient) {
     body: `<div class="form-grid">
       <label>Especialidade<select id="queue-especialidade" name="especialidade">${specialtyOptions(patient.especialidade)}</select></label>
       <label>Tipo de atendimento<select id="queue-tipoAtendimento" name="tipoAtendimento" data-selected="${escapeHTML(patient.tipoAtendimento || "")}"></select></label>
-      <label>Classificação<select name="classificacao">${classificationOptions(patient.classificacao)}</select></label>
-      <label>Modalidade<select id="queue-modalidade" name="modalidade" data-selected="${escapeHTML(patient.modalidade || "Presencial")}"></select></label>
+      <label>Classificação<select name="classificacao">${queueClassificationOptions(deriveQueueClassification(patient))}</select></label>
+      <label>Modalidade<select id="queue-modalidade" name="modalidade" data-selected="${escapeHTML(patient.modalidade === "Domiciliar" ? "Domiciliar" : "Presencial")}"></select></label>
+      <label class="checkbox-field span-2"><input name="prioridadeLegal" type="checkbox" value="yes"><span>Possui prioridade legal informada</span></label>
+      <label class="span-2">Justificativa da classificação<input name="motivoPrioridade" placeholder="Opcional; o sistema gera uma justificativa automática"></label>
       <label class="span-2">Observações da fila<textarea name="observacoes">${escapeHTML(patient.observacoes || "")}</textarea></label>
     </div>`,
     afterOpen: () => {
@@ -946,7 +1089,12 @@ async function openQueueDialog(patient) {
         classificacao: formValue(formData, "classificacao"),
         modalidade: formValue(formData, "modalidade")
       };
-      const condicoesFila = queueConditionsFromFields(queueFields);
+      const regulation = queueRegulationFields({
+        ...queueFields,
+        dataEntrada: todayISO(),
+        prioridadeLegal: formValue(formData, "prioridadeLegal") === "yes",
+        motivoPrioridade: formValue(formData, "motivoPrioridade")
+      }, { manual: true });
       const created = await addDoc(collection(db, "filaEspera"), {
         pacienteId: patient.id,
         pacienteNome: patient.nome,
@@ -954,8 +1102,7 @@ async function openQueueDialog(patient) {
         pacienteCpf: patient.cpf,
         telefone: patient.telefone,
         ...queueFields,
-        condicoesFila,
-        condicaoPrincipal: queuePrimaryCondition({ ...queueFields, condicoesFila }),
+        ...regulation,
         observacoes: formValue(formData, "observacoes"),
         status: "aguardando",
         dataEntrada: serverTimestamp(),
@@ -976,7 +1123,6 @@ async function openQueueDialog(patient) {
 
 async function renderQueue() {
   const pageSize = 50;
-  const scanSize = 121;
   const total = await countCollection("filaEspera", [where("status", "==", "aguardando")]);
 
   el.pageContent.innerHTML = `
@@ -987,9 +1133,13 @@ async function renderQueue() {
         <select id="queue-class-filter"><option value="">Todas as classificações</option>${classificationOptions()}</select>
         <select id="queue-condition-filter"><option value="">Todas as condições</option>${queueConditionOptions()}</select>
       </div>
-      <button class="secondary-button" data-go="patients">Cadastrar ou localizar paciente</button>
+      <div class="queue-toolbar-actions">
+        ${isAdmin() ? `<button class="secondary-button" data-action="recalculate-queue-order">Reorganizar fila</button>` : ""}
+        <button class="secondary-button" data-go="patients">Cadastrar ou localizar paciente</button>
+      </div>
     </div>
-    <div class="optimization-note"><strong>Fila paginada:</strong> o sistema consulta blocos pequenos e mostra no máximo 50 entradas por página, evitando baixar toda a fila a cada abertura.</div>
+    <div class="queue-rules-panel"><strong>Regra da fila:</strong> urgência → prioritário (pós-operatório, AVC e respiratório) → eletivo. Dentro do mesmo nível, prioridade legal informada e data de entrada mais antiga. Dados incompletos não perdem posição.</div>
+    <div class="optimization-note"><strong>Fila paginada:</strong> o sistema mostra no máximo 50 entradas por página e usa uma chave única de ordenação, sem depender de índices compostos.</div>
     <div class="panel" id="queue-panel">${loadingHTML("Carregando a fila...")}</div>`;
 
   const panel = document.querySelector("#queue-panel");
@@ -1008,6 +1158,8 @@ async function renderQueue() {
     const classification = classificationInput.value;
     const condition = conditionInput.value;
     const constraints = [];
+    const filtered = Boolean(specialty || classification || condition);
+    const scanSize = raw ? 121 : filtered ? 250 : 60;
 
     if (raw && digits.length === 11) {
       constraints.push(where("pacienteCpf", "==", digits));
@@ -1020,23 +1172,14 @@ async function renderQueue() {
       if (cursor) constraints.push(startAfter(cursor));
       else constraints.push(startAt(term));
       constraints.push(endAt(`${term}\uf8ff`));
-    } else if (condition) {
-      constraints.push(condition === "Geral" || condition === "Não informado"
-        ? where("condicaoPrincipal", "==", condition)
-        : where("condicoesFila", "array-contains", condition));
-      if (cursor) constraints.push(startAfter(cursor));
-    } else if (specialty) {
-      constraints.push(where("especialidade", "==", specialty));
-      if (cursor) constraints.push(startAfter(cursor));
-    } else if (classification) {
-      constraints.push(where("classificacao", "==", classification));
-      if (cursor) constraints.push(startAfter(cursor));
     } else {
-      constraints.push(orderBy("dataEntrada", "asc"));
+      constraints.push(orderBy("chaveOrdenacaoFila", "asc"));
       if (cursor) constraints.push(startAfter(cursor));
+      else constraints.push(startAt("A|"));
+      constraints.push(endAt("A|\uf8ff"));
     }
     constraints.push(limit(scanSize));
-    return constraints;
+    return { constraints, scanSize };
   }
 
   function matches(item) {
@@ -1055,12 +1198,13 @@ async function renderQueue() {
   async function loadPage(reset = false) {
     if (reset) { page = 1; cursors = [null]; }
     panel.innerHTML = loadingHTML("Buscando um bloco reduzido da fila...");
-    const result = await readQueryPage("filaEspera", buildConstraints(cursors[page - 1] || null));
+    const built = buildConstraints(cursors[page - 1] || null);
+    const result = await readQueryPage("filaEspera", built.constraints);
     const matchesInBlock = result.items.map((item, index) => ({ item, index })).filter(entry => matches(entry.item));
     const displayed = matchesInBlock.slice(0, pageSize);
     const items = displayed.map(entry => entry.item);
     const hasMoreInBlock = matchesInBlock.length > pageSize;
-    const hasMoreSource = result.size === scanSize;
+    const hasMoreSource = result.size === built.scanSize;
     const hasNext = hasMoreInBlock || hasMoreSource;
     if (hasNext) {
       const cursorIndex = displayed.length === pageSize ? displayed.at(-1).index : Math.max(0, result.docs.length - 1);
@@ -1069,7 +1213,7 @@ async function renderQueue() {
     state.caches.queue = items;
     panel.innerHTML = `
       <div class="archive-result-heading"><div><strong>${items.length.toLocaleString("pt-BR")} nesta página</strong><span>${total.toLocaleString("pt-BR")} aguardando no total</span></div><small>Página ${page}</small></div>
-      ${queueTable(items, true)}
+      ${queueTable(items, true, (page - 1) * pageSize + 1)}
       <div class="archive-pagination">
         <button class="secondary-button" type="button" data-queue-nav="prev" ${page <= 1 ? "disabled" : ""}>← Anterior</button>
         <span>Página ${page}</span>
@@ -1096,23 +1240,17 @@ async function renderQueue() {
   await loadPage(true);
 }
 
-function queueTable(items, actions = true) {
+function queueTable(items, actions = true, startPosition = 1) {
   if (!items.length) return emptyHTML("Fila de espera vazia", "Nenhum paciente está aguardando encaminhamento.");
-  const priority = { "Urgência": 0, "Prioritário": 1, "Eletivo": 2, "Não se aplica": 3, "Não informado": 4 };
-  const sorted = [...items].sort((a,b) => {
-    const p = (priority[a.classificacao] ?? 9) - (priority[b.classificacao] ?? 9);
-    if (p !== 0) return p;
-    const da = timestampToDate(a.dataEntrada)?.getTime() ?? Number.POSITIVE_INFINITY;
-    const db = timestampToDate(b.dataEntrada)?.getTime() ?? Number.POSITIVE_INFINITY;
-    return da - db;
-  });
+  const sorted = [...items].sort(queueRankComparator);
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Paciente</th><th>Especialidade</th><th>Condições da fila</th><th>Classificação</th><th>Entrada</th><th>Espera</th>${actions ? "<th>Ações</th>" : ""}</tr></thead>
-    <tbody>${sorted.map(item => `<tr class="${item.classificacao === "Urgência" ? "queue-urgent-row" : ""}">
+    <thead><tr>${actions ? "<th>Posição</th>" : ""}<th>Paciente</th><th>Especialidade</th><th>Condições da fila</th><th>Prioridade</th><th>Entrada</th><th>Espera</th>${actions ? "<th>Ações</th>" : ""}</tr></thead>
+    <tbody>${sorted.map((item, index) => `<tr class="${deriveQueueClassification(item) === "Urgência" ? "queue-urgent-row" : ""}">
+      ${actions ? `<td><span class="queue-position">${startPosition + index}º</span></td>` : ""}
       <td><strong>${escapeHTML(item.pacienteNome)}</strong><br><small>${escapeHTML(formatCPF(item.pacienteCpf) || formatPhone(item.telefone) || "Cadastro incompleto")}</small></td>
-      <td>${escapeHTML(item.especialidade)}<br><small>${escapeHTML(item.tipoAtendimento || "Não informado")} · ${escapeHTML(item.modalidade || "Não informado")}</small></td>
+      <td>${escapeHTML(item.especialidade)}<br><small>${escapeHTML(item.tipoAtendimento || "Geral")} · ${escapeHTML(item.modalidade || "Presencial")}</small></td>
       <td>${queueConditionBadges(item)}</td>
-      <td>${badge(item.classificacao || "Não informado")}</td>
+      <td>${badge(deriveQueueClassification(item))}<div class="queue-score">${queuePriorityScore(item)} pontos${item.prioridadeLegal ? " · prioridade legal" : ""}</div><small>${escapeHTML(item.motivoPrioridade || automaticPriorityReason(item))}</small></td>
       <td>${escapeHTML(formatTimestamp(item.dataEntrada, false))}</td>
       <td><strong>${item.dataEntrada ? `${daysWaiting(item.dataEntrada)} dia(s)` : "Data não informada"}</strong></td>
       ${actions ? `<td><div class="actions-cell"><button class="table-button" data-action="edit-queue" data-id="${item.id}">Editar</button><button class="table-button primary" data-action="refer-patient" data-id="${item.id}">Encaminhar</button><button class="table-button danger" data-action="remove-queue" data-id="${item.id}">Retirar</button></div></td>` : ""}
@@ -1132,11 +1270,13 @@ async function openQueueEditDialog(queueItem) {
       <label>Telefone secundário<input name="telefoneSecundario" value="${escapeHTML(formatPhone(queueItem.telefoneSecundario || ""))}"></label>
       <label>Especialidade<select id="queue-edit-especialidade" name="especialidade">${specialtyOptions(queueItem.especialidade)}</select></label>
       <label>Tipo de atendimento<select id="queue-edit-tipoAtendimento" name="tipoAtendimento" data-selected="${escapeHTML(queueItem.tipoAtendimento || "")}"></select></label>
-      <label>Classificação<select name="classificacao">${classificationOptions(queueItem.classificacao || "Não informado")}</select></label>
-      <label>Modalidade<select id="queue-edit-modalidade" name="modalidade" data-selected="${escapeHTML(queueItem.modalidade || "Não informado")}"></select></label>
-      <label>Data de entrada<input name="dataEntrada" type="date" value="${escapeHTML(queueDateISO(queueItem.dataEntrada))}"></label>
+      <label>Classificação<select name="classificacao">${queueClassificationOptions(deriveQueueClassification(queueItem))}</select></label>
+      <label>Modalidade<select id="queue-edit-modalidade" name="modalidade" data-selected="${escapeHTML(queueItem.modalidade === "Domiciliar" ? "Domiciliar" : "Presencial")}"></select></label>
+      <label>Data de entrada<input name="dataEntrada" type="date" value="${escapeHTML(queueDateISO(queueItem.dataEntrada) || todayISO())}" required></label>
+      <label class="checkbox-field"><input name="prioridadeLegal" type="checkbox" value="yes" ${queueItem.prioridadeLegal ? "checked" : ""}><span>Prioridade legal informada</span></label>
+      <label class="span-2">Justificativa da classificação<input name="motivoPrioridade" value="${escapeHTML(queueItem.motivoPrioridade || automaticPriorityReason(queueItem))}"></label>
       <label class="span-2">Observações<textarea name="observacoes">${escapeHTML(queueItem.observacoes || "")}</textarea></label>
-      <div class="info-box span-2">As condições da fila serão recalculadas automaticamente a partir da classificação, do tipo de atendimento e da modalidade.</div>
+      <div class="info-box span-2">Ao salvar, a posição é recalculada. Dados incompletos não reduzem a pontuação; a data de entrada e a prioridade clínica organizam a fila.</div>
     </div>`,
     afterOpen: () => {
       updateSpecialtyFields("queue-edit-");
@@ -1151,10 +1291,16 @@ async function openQueueEditDialog(queueItem) {
         classificacao: formValue(formData, "classificacao"),
         modalidade: formValue(formData, "modalidade")
       };
-      const condicoesFila = queueConditionsFromFields(queueFields);
-      const dataEntrada = formValue(formData, "dataEntrada");
+      const dataEntrada = formValue(formData, "dataEntrada") || todayISO();
       const telefone = onlyDigits(formValue(formData, "telefone"));
       const telefoneSecundario = onlyDigits(formValue(formData, "telefoneSecundario"));
+      const regulation = queueRegulationFields({
+        ...queueItem,
+        ...queueFields,
+        dataEntrada,
+        prioridadeLegal: formValue(formData, "prioridadeLegal") === "yes",
+        motivoPrioridade: formValue(formData, "motivoPrioridade")
+      }, { manual: true });
       const batch = writeBatch(db);
       batch.update(doc(db, "filaEspera", queueItem.id), {
         pacienteNome,
@@ -1162,11 +1308,10 @@ async function openQueueEditDialog(queueItem) {
         telefone,
         telefoneSecundario,
         ...queueFields,
-        condicoesFila,
-        condicaoPrincipal: queuePrimaryCondition({ ...queueFields, condicoesFila }),
-        dataEntrada: dataEntrada ? parseISODate(dataEntrada) : null,
+        ...regulation,
+        dataEntrada: parseISODate(dataEntrada),
         observacoes: formValue(formData, "observacoes"),
-        cadastroIncompleto: !telefone || !dataEntrada,
+        cadastroIncompleto: !telefone,
         atualizadoEm: serverTimestamp(),
         atualizadoPor: state.user.uid
       });
@@ -1176,14 +1321,17 @@ async function openQueueEditDialog(queueItem) {
         telefone,
         telefoneSecundario,
         ...queueFields,
-        condicoesFila,
-        condicaoPrincipal: queuePrimaryCondition({ ...queueFields, condicoesFila }),
+        classificacao: regulation.classificacao,
+        tipoAtendimento: regulation.tipoAtendimento,
+        modalidade: regulation.modalidade,
+        condicoesFila: regulation.condicoesFila,
+        condicaoPrincipal: regulation.condicaoPrincipal,
         observacoes: formValue(formData, "observacoes"),
         atualizadoEm: serverTimestamp(),
         atualizadoPor: state.user.uid
       }, { merge: true });
       await batch.commit();
-      await logAction("editar_fila", "filaEspera", queueItem.id, { pacienteNome, condicoesFila });
+      await logAction("editar_fila", "filaEspera", queueItem.id, { pacienteNome, classificacao: regulation.classificacao, pontuacaoFila: regulation.pontuacaoFila });
       invalidateDataCache("pacientes:", "filaEspera:", "reports-queue:");
       toast("Dados da fila atualizados com sucesso.");
       await renderQueue();
@@ -1249,7 +1397,8 @@ async function openReferralDialog(queueItem) {
         profissionalId: professional.id,
         profissionalNome: professional.nome,
         dataSaida: serverTimestamp(),
-        encaminhadoPor: state.user.uid
+        encaminhadoPor: state.user.uid,
+        chaveOrdenacaoFila: queueOrderingKey({ ...queueItem, status: "encaminhado" }, false)
       });
       batch.update(doc(db, "pacientes", queueItem.pacienteId), {
         status: "em_atendimento",
@@ -1280,7 +1429,8 @@ async function removeFromQueue(queueItem) {
         status: "retirado",
         motivoRetirada: formValue(formData, "motivo"),
         retiradoEm: serverTimestamp(),
-        retiradoPor: state.user.uid
+        retiradoPor: state.user.uid,
+        chaveOrdenacaoFila: queueOrderingKey({ ...queueItem, status: "retirado" }, false)
       });
       batch.update(doc(db, "pacientes", queueItem.pacienteId), {
         status: "ativo",
@@ -3565,7 +3715,7 @@ function migrationConditionSummary(records = []) {
 function validateWaitingListMigrationPayload(payload) {
   if (!payload || typeof payload !== "object") throw new Error("O JSON selecionado não é válido.");
   if (payload.metadata?.datasetId !== WAITING_LIST_MIGRATION_ID) {
-    throw new Error("Este é um pacote antigo. Selecione o JSON com as condições clínicas organizadas (versão 2.0).");
+    throw new Error("Este é um pacote antigo. Selecione o JSON da Regulação Justa v3.");
   }
   const patients = payload.pacientesSugeridos;
   const queue = payload.filaEsperaParaImportar;
@@ -3646,6 +3796,7 @@ function migrationPatientDocument(patient, queueItems, { preserveWorkflow = fals
     reasons.length ? `Pendências preservadas: ${reasons.join("; ")}.` : "Dados pessoais complementares ainda precisam ser conferidos."
   ];
 
+  const regulation = queueRegulationFields({ ...first, status: "aguardando" });
   const documentData = {
     nome: migrationText(patient.nome),
     nomeBusca: normalize(patient.nomeBusca || patient.nome),
@@ -3657,11 +3808,13 @@ function migrationPatientDocument(patient, queueItems, { preserveWorkflow = fals
     dataEncaminhamento: dates[0] || "",
     especialidade: migrationText(first.especialidade, patient.especialidadesOrigem?.[0] || "Não informado"),
     especialidades: Array.isArray(patient.especialidadesOrigem) ? patient.especialidadesOrigem : [],
-    tipoAtendimento: migrationText(first.tipoAtendimento, "Não informado"),
-    classificacao: migrationText(first.classificacao, "Não informado"),
-    modalidade: migrationText(first.modalidade, "Não informado"),
-    condicaoPrincipal: migrationText(first.condicaoPrincipal, queuePrimaryCondition(first)),
-    condicoesFila: Array.isArray(first.condicoesFila) ? first.condicoesFila : queueConditionsFromFields(first),
+    tipoAtendimento: regulation.tipoAtendimento,
+    classificacao: regulation.classificacao,
+    modalidade: regulation.modalidade,
+    condicaoPrincipal: regulation.condicaoPrincipal,
+    condicoesFila: regulation.condicoesFila,
+    pontuacaoFila: regulation.pontuacaoFila,
+    motivoPrioridade: regulation.motivoPrioridade,
     marcadoresComplementares: Array.isArray(first.marcadoresComplementares) ? first.marcadoresComplementares : [],
     endereco: "",
     observacoes: notes.join(" "),
@@ -3697,6 +3850,7 @@ function migrationQueueDocument(item, { preserveWorkflow = false } = {}) {
     `Origem: ${item.arquivoOrigem || "planilha"}${item.linhaOrigem ? `, linha ${item.linhaOrigem}` : ""}.`
   ].filter(Boolean).join(" ");
 
+  const regulation = queueRegulationFields({ ...item, status: "aguardando" });
   const documentData = {
     pacienteId: migrationSafeId(item.chavePaciente, "paciente"),
     pacienteNome: migrationText(item.nomePaciente),
@@ -3706,11 +3860,17 @@ function migrationQueueDocument(item, { preserveWorkflow = false } = {}) {
     telefoneSecundario: onlyDigits(item.telefoneSecundario || item.telefones?.[1] || ""),
     telefones: Array.isArray(item.telefones) ? item.telefones : [],
     especialidade: migrationText(item.especialidade, "Não informado"),
-    tipoAtendimento: migrationText(item.tipoAtendimento, "Não informado"),
-    classificacao: migrationText(item.classificacao, "Não informado"),
-    modalidade: migrationText(item.modalidade, "Não informado"),
-    condicaoPrincipal: migrationText(item.condicaoPrincipal, queuePrimaryCondition(item)),
-    condicoesFila: Array.isArray(item.condicoesFila) ? item.condicoesFila : queueConditionsFromFields(item),
+    tipoAtendimento: regulation.tipoAtendimento,
+    classificacao: regulation.classificacao,
+    modalidade: regulation.modalidade,
+    condicaoPrincipal: regulation.condicaoPrincipal,
+    condicoesFila: regulation.condicoesFila,
+    pontuacaoFila: regulation.pontuacaoFila,
+    motivoPrioridade: regulation.motivoPrioridade,
+    prioridadeLegal: regulation.prioridadeLegal,
+    ajusteRegulador: regulation.ajusteRegulador,
+    classificacaoOrigem: regulation.classificacaoOrigem,
+    chaveOrdenacaoFila: regulation.chaveOrdenacaoFila,
     marcadoresComplementares: Array.isArray(item.marcadoresComplementares) ? item.marcadoresComplementares : [],
     observacoes: notes,
     status: "aguardando",
@@ -3735,6 +3895,7 @@ function migrationQueueDocument(item, { preserveWorkflow = false } = {}) {
     delete documentData.status;
     delete documentData.criadoEm;
     delete documentData.criadoPor;
+    delete documentData.chaveOrdenacaoFila;
   }
   return documentData;
 }
@@ -3756,7 +3917,7 @@ async function renderMigration() {
       <div>
         <span class="eyebrow">Ferramenta administrativa</span>
         <h2>Migração das filas de espera de 2026</h2>
-        <p>Importe o JSON privado com as condições clínicas separadas do nome. Urgência, pós-operatório, AVC, respiratório e domiciliar serão gravados em campos próprios.</p>
+        <p>Importe o JSON privado da Regulação Justa v3. Todos entram prontos: urgência, prioritário ou eletivo, com desempate pela data mais antiga.</p>
       </div>
       <div class="migration-status ${completed ? "done" : inProgress ? "warning" : "ready"}">
         <span>${completed ? "✓" : inProgress ? "!" : "↓"}</span>
@@ -3784,7 +3945,7 @@ async function renderMigration() {
       <section class="panel migration-panel">
         <div class="panel-heading"><div><span class="eyebrow">Cuidados</span><h3>Antes de iniciar</h3></div></div>
         <ul class="migration-checklist">
-          <li>Use somente o arquivo <strong>fila-espera-cran-2026-condicoes-organizadas.json</strong>.</li>
+          <li>Use somente o arquivo <strong>fila-espera-cran-2026-regulacao-justa-v3.json</strong>.</li>
           <li>Não coloque o JSON no GitHub, no Hosting ou dentro da pasta pública.</li>
           <li>Mantenha esta página aberta até a barra chegar a 100%.</li>
           <li>Os 43 desistentes ou encaminhados externamente não entram na fila ativa.</li>
@@ -3817,7 +3978,7 @@ async function openWaitingListImportDialog() {
       <label class="file-drop-field">
         <span>Arquivo tratado das filas (.json)</span>
         <input id="waiting-list-import-file" name="waitingListImportFile" type="file" accept="application/json,.json" required>
-        <small>Arquivo esperado: fila-espera-cran-2026-condicoes-organizadas.json</small>
+        <small>Arquivo esperado: fila-espera-cran-2026-regulacao-justa-v3.json</small>
       </label>
       <div id="waiting-list-import-preview" class="archive-import-preview muted-box">Selecione o JSON para conferir os números antes de importar.</div>
       <label class="migration-confirmation hidden" id="waiting-list-confirmation-wrap">
@@ -3886,11 +4047,11 @@ async function openWaitingListImportDialog() {
       progress.classList.remove("hidden");
 
       const markerRef = doc(db, "configuracoes", `migracao_${WAITING_LIST_MIGRATION_ID}`);
-      const legacyMarkerRef = doc(db, "configuracoes", `migracao_${LEGACY_WAITING_LIST_MIGRATION_ID}`);
+      const legacyMarkerRefs = LEGACY_WAITING_LIST_MIGRATION_IDS.map(id => doc(db, "configuracoes", `migracao_${id}`));
       progressLabel.textContent = "Verificando a migração...";
-      const [markerSnap, legacyMarkerSnap] = await Promise.all([getDoc(markerRef), getDoc(legacyMarkerRef)]);
+      const [markerSnap, ...legacyMarkerSnaps] = await Promise.all([getDoc(markerRef), ...legacyMarkerRefs.map(ref => getDoc(ref))]);
       const marker = markerSnap.exists() ? markerSnap.data() : null;
-      const preserveWorkflow = legacyMarkerSnap.exists() && legacyMarkerSnap.data().concluida === true;
+      const preserveWorkflow = legacyMarkerSnaps.some(snap => snap.exists() && snap.data().concluida === true);
       if (marker?.concluida === true) {
         progressBar.value = 100;
         progressValue.textContent = "100%";
@@ -3969,6 +4130,12 @@ async function openWaitingListImportDialog() {
         );
       }
 
+      if (preserveWorkflow) {
+        progressLabel.textContent = "Reorganizando pacientes ainda aguardando...";
+        progressDetail.textContent = "Os pacientes já encaminhados não serão reabertos.";
+        await recalculateWaitingListOrder({ silent: true });
+      }
+
       await setDoc(markerRef, {
         datasetId: WAITING_LIST_MIGRATION_ID,
         status: "concluida",
@@ -4044,6 +4211,7 @@ el.pageContent.addEventListener("click", async event => {
     if (action === "manual-archive") return await openManualArchiveDialog();
     if (action === "import-archive") return await openArchiveImportDialog();
     if (action === "import-waiting-lists") return await openWaitingListImportDialog();
+    if (action === "recalculate-queue-order") return openQueueReorderDialog();
     if (action === "export-archive") return exportArchiveCSV();
   } catch (error) {
     console.error(error);
