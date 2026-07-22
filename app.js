@@ -29,32 +29,37 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 import { auth, db, firebaseConfig } from "./firebase-config.js";
 
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.9.0";
 
 const SPECIALTIES = {
   "Fisioterapia": {
-    tipos: ["Geral", "Pós-operatório", "AVC", "Respiratório"],
-    modalidades: ["Presencial", "Domiciliar"]
+    tipos: ["Geral", "Pós-operatório", "AVC", "Respiratório", "Não informado"],
+    modalidades: ["Presencial", "Domiciliar", "Não informado"]
   },
   "Psicologia": {
-    tipos: ["Adulto", "Infantil"],
-    modalidades: ["Presencial"]
+    tipos: ["Adulto", "Infantil", "Não informado"],
+    modalidades: ["Presencial", "Não informado"]
   },
   "Fonoaudiologia": {
-    tipos: ["Geral"],
-    modalidades: ["Presencial", "Domiciliar"]
+    tipos: ["Geral", "Não informado"],
+    modalidades: ["Presencial", "Domiciliar", "Não informado"]
   },
   "Nutrição": {
-    tipos: ["Geral"],
-    modalidades: ["Presencial", "Domiciliar"]
+    tipos: ["Geral", "Não informado"],
+    modalidades: ["Presencial", "Domiciliar", "Não informado"]
   },
   "Auriculoterapia": {
-    tipos: ["Geral"],
-    modalidades: ["Presencial"]
+    tipos: ["Geral", "Não informado"],
+    modalidades: ["Presencial", "Não informado"]
+  },
+  "Academia": {
+    tipos: ["Geral", "Não informado"],
+    modalidades: ["Presencial", "Não informado"]
   }
 };
 
-const CLASSIFICATIONS = ["Urgência", "Prioritário", "Eletivo", "Não se aplica"];
+const CLASSIFICATIONS = ["Urgência", "Prioritário", "Eletivo", "Não se aplica", "Não informado"];
+const WAITING_LIST_MIGRATION_ID = "cran_filas_espera_2026_v1";
 const ROLE_NAMES = {
   admin: "Administrador",
   recepcao: "Recepção",
@@ -70,7 +75,8 @@ const PAGE_META = {
   reports: ["Relatórios", "Indicadores, filtros, impressão e exportação"],
   professionals: ["Profissionais", "Equipe cadastrada no CRAN"],
   users: ["Usuários", "Acessos e permissões do sistema"],
-  archive: ["Arquivo morto", "Pacientes concluídos e históricos arquivados"]
+  archive: ["Arquivo morto", "Pacientes concluídos e históricos arquivados"],
+  migration: ["Migração de dados", "Importação controlada das filas de espera de 2026"]
 };
 
 const state = {
@@ -249,8 +255,8 @@ function authErrorMessage(error) {
     "auth/weak-password": "A senha deve ter pelo menos 6 caracteres.",
     "auth/invalid-email": "Informe um e-mail válido.",
     "permission-denied": "Você não tem permissão para realizar esta ação.",
-    "failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 1.8.0 e limpe o cache do navegador.",
-    "firestore/failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 1.8.0 e limpe o cache do navegador."
+    "failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 1.9.0 e limpe o cache do navegador.",
+    "firestore/failed-precondition": "Não foi possível executar a consulta. Atualize o sistema para a versão 1.9.0 e limpe o cache do navegador."
   };
   return messages[error?.code] || error?.message || "Não foi possível concluir a operação.";
 }
@@ -396,7 +402,7 @@ function configureNavigation() {
   if (isProfessional() && ["queue", "reports", "professionals", "users", "archive"].includes(state.currentPage)) {
     state.currentPage = "dashboard";
   }
-  if (!isAdmin() && state.currentPage === "users") state.currentPage = "dashboard";
+  if (!isAdmin() && ["users", "migration"].includes(state.currentPage)) state.currentPage = "dashboard";
 }
 
 async function setPage(page) {
@@ -421,6 +427,7 @@ async function renderCurrentPage() {
       case "professionals": return await renderProfessionals();
       case "users": return await renderUsers();
       case "archive": return await renderArchive();
+      case "migration": return await renderMigration();
       default: return await renderDashboard();
     }
   } catch (error) {
@@ -623,40 +630,129 @@ function summaryBySpecialtyCounts(counts = {}) {
 }
 
 async function renderPatients() {
-  let patients;
   if (isProfessional()) {
     if (!state.profile.profissionalId) {
       el.pageContent.innerHTML = emptyHTML("Acesso não vinculado", "Seu usuário ainda não está vinculado a um profissional.");
       return;
     }
-    patients = await readCollection("pacientes", [where("profissionalId", "==", state.profile.profissionalId)], { cacheKey: `list-professional:${state.profile.profissionalId}`, ttl: 60_000 });
-  } else {
-    patients = await readCollection("pacientes", [], { cacheKey: "list-management", ttl: 60_000 });
+    const patients = (await readCollection("pacientes", [
+      where("profissionalId", "==", state.profile.profissionalId)
+    ], { cacheKey: `list-professional:${state.profile.profissionalId}`, ttl: 60_000 }))
+      .filter(item => item.status !== "arquivo_morto");
+    state.caches.patients = patients;
+    el.pageContent.innerHTML = `
+      <div class="page-toolbar"><div class="filters"><input id="patient-search" type="search" placeholder="Buscar paciente"></div></div>
+      <div class="panel" id="patients-panel">${patientsTable(patients)}</div>`;
+    document.querySelector("#patient-search").addEventListener("input", event => {
+      const term = normalize(event.target.value);
+      const filtered = patients.filter(item => normalize(`${item.nome} ${item.cpf || ""} ${item.telefone || ""}`).includes(term));
+      document.querySelector("#patients-panel").innerHTML = patientsTable(filtered);
+    });
+    return;
   }
-  patients = patients.filter(item => item.status !== "arquivo_morto");
-  state.caches.patients = patients;
+
+  const pageSize = 50;
+  const scanSize = 101;
+  const total = await countCollection("pacientes", [where("status", "!=", "arquivo_morto")]);
 
   el.pageContent.innerHTML = `
     <div class="page-toolbar">
       <div class="filters">
-        <input id="patient-search" type="search" placeholder="Buscar nome, CPF, prontuário ou telefone">
+        <input id="patient-search" type="search" placeholder="Nome, CPF, prontuário ou telefone">
         <select id="patient-specialty-filter"><option value="">Todas as especialidades</option>${specialtyOptions()}</select>
       </div>
       ${canManage() ? `<button class="primary-button" data-action="new-patient">+ Novo paciente</button>` : ""}
     </div>
-    <div class="panel" id="patients-panel">${patientsTable(patients)}</div>`;
+    <div class="optimization-note"><strong>Carregamento reduzido:</strong> são exibidos no máximo 50 pacientes por página. A busca consulta somente o campo informado no Firestore.</div>
+    <div class="panel" id="patients-panel">${loadingHTML("Carregando pacientes...")}</div>`;
 
-  const apply = () => {
-    const term = normalize(document.querySelector("#patient-search").value);
-    const specialty = document.querySelector("#patient-specialty-filter").value;
-    const filtered = patients.filter(item => {
-      const haystack = normalize(`${item.nome} ${item.cpf} ${item.numeroProntuario || ""} ${item.telefone} ${item.patologia || ""}`);
-      return (!term || haystack.includes(term)) && (!specialty || item.especialidade === specialty);
-    });
-    document.querySelector("#patients-panel").innerHTML = patientsTable(filtered);
-  };
-  document.querySelector("#patient-search").addEventListener("input", apply);
-  document.querySelector("#patient-specialty-filter").addEventListener("change", apply);
+  const panel = document.querySelector("#patients-panel");
+  const searchInput = document.querySelector("#patient-search");
+  const specialtyInput = document.querySelector("#patient-specialty-filter");
+  let page = 1;
+  let cursors = [null];
+
+  function buildConstraints(cursor = null) {
+    const raw = searchInput.value.trim();
+    const term = normalize(raw);
+    const digits = onlyDigits(raw);
+    const specialty = specialtyInput.value;
+    const constraints = [];
+
+    if (raw && digits.length === 11) {
+      constraints.push(where("cpf", "==", digits));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else if (raw && digits.length >= 8) {
+      constraints.push(where("telefone", "==", digits));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else if (raw && digits.length) {
+      constraints.push(where("numeroProntuario", "==", raw));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else if (raw) {
+      constraints.push(orderBy("nomeBusca", "asc"));
+      if (cursor) constraints.push(startAfter(cursor));
+      else constraints.push(startAt(term));
+      constraints.push(endAt(`${term}\uf8ff`));
+    } else if (specialty) {
+      constraints.push(where("especialidade", "==", specialty));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else {
+      constraints.push(orderBy("nomeBusca", "asc"));
+      if (cursor) constraints.push(startAfter(cursor));
+    }
+    constraints.push(limit(scanSize));
+    return constraints;
+  }
+
+  function matches(item) {
+    if (item.status === "arquivo_morto") return false;
+    const specialty = specialtyInput.value;
+    if (specialty && item.especialidade !== specialty && !item.especialidades?.includes(specialty)) return false;
+    const raw = searchInput.value.trim();
+    if (!raw) return true;
+    return normalize(`${item.nome || ""} ${item.cpf || ""} ${item.numeroProntuario || ""} ${item.telefone || ""} ${item.telefoneSecundario || ""}`).includes(normalize(raw));
+  }
+
+  async function loadPage(reset = false) {
+    if (reset) { page = 1; cursors = [null]; }
+    panel.innerHTML = loadingHTML("Buscando um bloco reduzido de pacientes...");
+    const result = await readQueryPage("pacientes", buildConstraints(cursors[page - 1] || null));
+    const matchesInBlock = result.items.map((item, index) => ({ item, index })).filter(entry => matches(entry.item));
+    const displayed = matchesInBlock.slice(0, pageSize);
+    const items = displayed.map(entry => entry.item);
+    const hasMoreInBlock = matchesInBlock.length > pageSize;
+    const hasMoreSource = result.size === scanSize;
+    const hasNext = hasMoreInBlock || hasMoreSource;
+    if (hasNext) {
+      const cursorIndex = displayed.length === pageSize ? displayed.at(-1).index : Math.max(0, result.docs.length - 1);
+      cursors[page] = result.docs[cursorIndex] || result.lastDoc;
+    }
+    state.caches.patients = items;
+    panel.innerHTML = `
+      <div class="archive-result-heading"><div><strong>${items.length.toLocaleString("pt-BR")} nesta página</strong><span>${total.toLocaleString("pt-BR")} cadastros ativos no total</span></div><small>Página ${page}</small></div>
+      ${patientsTable(items)}
+      <div class="archive-pagination">
+        <button class="secondary-button" type="button" data-patient-nav="prev" ${page <= 1 ? "disabled" : ""}>← Anterior</button>
+        <span>Página ${page}</span>
+        <button class="secondary-button" type="button" data-patient-nav="next" ${!hasNext ? "disabled" : ""}>Próxima →</button>
+      </div>`;
+  }
+
+  const resetAndLoad = debounce(() => loadPage(true).catch(error => {
+    console.error(error);
+    panel.innerHTML = emptyHTML("Não foi possível carregar", authErrorMessage(error));
+  }), 450);
+  searchInput.addEventListener("input", resetAndLoad);
+  specialtyInput.addEventListener("change", () => loadPage(true));
+  panel.addEventListener("click", async event => {
+    const button = event.target.closest("[data-patient-nav]");
+    if (!button || button.disabled) return;
+    if (button.dataset.patientNav === "next") page += 1;
+    else page = Math.max(1, page - 1);
+    await loadPage(false);
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  await loadPage(true);
 }
 
 function patientsTable(items) {
@@ -815,33 +911,114 @@ async function openQueueDialog(patient) {
 }
 
 async function renderQueue() {
-  const items = await readCollection("filaEspera", [where("status", "==", "aguardando")], { cacheKey: "waiting-list", ttl: 45_000 });
-  state.caches.queue = items;
+  const pageSize = 50;
+  const scanSize = 121;
+  const total = await countCollection("filaEspera", [where("status", "==", "aguardando")]);
+
   el.pageContent.innerHTML = `
     <div class="page-toolbar">
       <div class="filters">
-        <input id="queue-search" type="search" placeholder="Buscar paciente">
+        <input id="queue-search" type="search" placeholder="Nome, CPF ou telefone">
         <select id="queue-specialty-filter"><option value="">Todas as especialidades</option>${specialtyOptions()}</select>
         <select id="queue-class-filter"><option value="">Todas as classificações</option>${classificationOptions()}</select>
       </div>
       <button class="secondary-button" data-go="patients">Cadastrar ou localizar paciente</button>
     </div>
-    <div class="panel" id="queue-panel">${queueTable(items, true)}</div>`;
+    <div class="optimization-note"><strong>Fila paginada:</strong> o sistema consulta blocos pequenos e mostra no máximo 50 entradas por página, evitando baixar toda a fila a cada abertura.</div>
+    <div class="panel" id="queue-panel">${loadingHTML("Carregando a fila...")}</div>`;
 
-  const apply = () => {
-    const term = normalize(document.querySelector("#queue-search").value);
-    const specialty = document.querySelector("#queue-specialty-filter").value;
-    const classification = document.querySelector("#queue-class-filter").value;
-    const filtered = items.filter(item =>
-      (!term || normalize(`${item.pacienteNome} ${item.pacienteCpf}`).includes(term))
-      && (!specialty || item.especialidade === specialty)
-      && (!classification || item.classificacao === classification)
-    );
-    document.querySelector("#queue-panel").innerHTML = queueTable(filtered, true);
-  };
-  document.querySelector("#queue-search").addEventListener("input", apply);
-  document.querySelector("#queue-specialty-filter").addEventListener("change", apply);
-  document.querySelector("#queue-class-filter").addEventListener("change", apply);
+  const panel = document.querySelector("#queue-panel");
+  const searchInput = document.querySelector("#queue-search");
+  const specialtyInput = document.querySelector("#queue-specialty-filter");
+  const classificationInput = document.querySelector("#queue-class-filter");
+  let page = 1;
+  let cursors = [null];
+
+  function buildConstraints(cursor = null) {
+    const raw = searchInput.value.trim();
+    const term = normalize(raw);
+    const digits = onlyDigits(raw);
+    const specialty = specialtyInput.value;
+    const classification = classificationInput.value;
+    const constraints = [];
+
+    if (raw && digits.length === 11) {
+      constraints.push(where("pacienteCpf", "==", digits));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else if (raw && digits.length >= 8) {
+      constraints.push(where("telefone", "==", digits));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else if (raw) {
+      constraints.push(orderBy("pacienteNomeBusca", "asc"));
+      if (cursor) constraints.push(startAfter(cursor));
+      else constraints.push(startAt(term));
+      constraints.push(endAt(`${term}\uf8ff`));
+    } else if (specialty) {
+      constraints.push(where("especialidade", "==", specialty));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else if (classification) {
+      constraints.push(where("classificacao", "==", classification));
+      if (cursor) constraints.push(startAfter(cursor));
+    } else {
+      constraints.push(orderBy("dataEntrada", "asc"));
+      if (cursor) constraints.push(startAfter(cursor));
+    }
+    constraints.push(limit(scanSize));
+    return constraints;
+  }
+
+  function matches(item) {
+    if (item.status !== "aguardando") return false;
+    const specialty = specialtyInput.value;
+    const classification = classificationInput.value;
+    if (specialty && item.especialidade !== specialty) return false;
+    if (classification && item.classificacao !== classification) return false;
+    const raw = searchInput.value.trim();
+    if (!raw) return true;
+    return normalize(`${item.pacienteNome || ""} ${item.pacienteCpf || ""} ${item.telefone || ""} ${item.telefoneSecundario || ""}`).includes(normalize(raw));
+  }
+
+  async function loadPage(reset = false) {
+    if (reset) { page = 1; cursors = [null]; }
+    panel.innerHTML = loadingHTML("Buscando um bloco reduzido da fila...");
+    const result = await readQueryPage("filaEspera", buildConstraints(cursors[page - 1] || null));
+    const matchesInBlock = result.items.map((item, index) => ({ item, index })).filter(entry => matches(entry.item));
+    const displayed = matchesInBlock.slice(0, pageSize);
+    const items = displayed.map(entry => entry.item);
+    const hasMoreInBlock = matchesInBlock.length > pageSize;
+    const hasMoreSource = result.size === scanSize;
+    const hasNext = hasMoreInBlock || hasMoreSource;
+    if (hasNext) {
+      const cursorIndex = displayed.length === pageSize ? displayed.at(-1).index : Math.max(0, result.docs.length - 1);
+      cursors[page] = result.docs[cursorIndex] || result.lastDoc;
+    }
+    state.caches.queue = items;
+    panel.innerHTML = `
+      <div class="archive-result-heading"><div><strong>${items.length.toLocaleString("pt-BR")} nesta página</strong><span>${total.toLocaleString("pt-BR")} aguardando no total</span></div><small>Página ${page}</small></div>
+      ${queueTable(items, true)}
+      <div class="archive-pagination">
+        <button class="secondary-button" type="button" data-queue-nav="prev" ${page <= 1 ? "disabled" : ""}>← Anterior</button>
+        <span>Página ${page}</span>
+        <button class="secondary-button" type="button" data-queue-nav="next" ${!hasNext ? "disabled" : ""}>Próxima →</button>
+      </div>`;
+  }
+
+  const resetAndLoad = debounce(() => loadPage(true).catch(error => {
+    console.error(error);
+    panel.innerHTML = emptyHTML("Não foi possível carregar", authErrorMessage(error));
+  }), 450);
+  searchInput.addEventListener("input", resetAndLoad);
+  specialtyInput.addEventListener("change", () => loadPage(true));
+  classificationInput.addEventListener("change", () => loadPage(true));
+  panel.addEventListener("click", async event => {
+    const button = event.target.closest("[data-queue-nav]");
+    if (!button || button.disabled) return;
+    if (button.dataset.queueNav === "next") page += 1;
+    else page = Math.max(1, page - 1);
+    await loadPage(false);
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  await loadPage(true);
 }
 
 function queueTable(items, actions = true) {
@@ -3212,6 +3389,429 @@ async function restorePatient(item) {
   });
 }
 
+
+function migrationSpecialtySummary(records = []) {
+  const totals = new Map();
+  records.forEach(record => {
+    const specialty = String(record.especialidade || "Não informado").trim() || "Não informado";
+    totals.set(specialty, (totals.get(specialty) || 0) + 1);
+  });
+  return [...totals.entries()].sort((a, b) => a[0].localeCompare(b[0], "pt-BR"));
+}
+
+function validateWaitingListMigrationPayload(payload) {
+  if (!payload || typeof payload !== "object") throw new Error("O JSON selecionado não é válido.");
+  const patients = payload.pacientesSugeridos;
+  const queue = payload.filaEsperaParaImportar;
+  if (!Array.isArray(patients) || !Array.isArray(queue)) {
+    throw new Error("Use o arquivo JSON preparado para importar todos os pacientes aguardando.");
+  }
+  if (!patients.length || !queue.length) throw new Error("O arquivo não contém pacientes ou entradas de fila.");
+
+  const patientKeys = new Set();
+  for (const patient of patients) {
+    if (!patient?.chavePaciente || !patient?.nome) throw new Error("Há pacientes sem chave ou sem nome no arquivo.");
+    if (patientKeys.has(patient.chavePaciente)) throw new Error(`Chave de paciente repetida: ${patient.chavePaciente}`);
+    patientKeys.add(patient.chavePaciente);
+  }
+
+  const queueKeys = new Set();
+  for (const item of queue) {
+    if (!item?.chaveFila || !item?.chavePaciente || !item?.nomePaciente || !item?.especialidade) {
+      throw new Error("Há entradas de fila sem chave, paciente, nome ou especialidade.");
+    }
+    if (!patientKeys.has(item.chavePaciente)) {
+      throw new Error(`A fila ${item.chaveFila} aponta para um paciente inexistente no pacote.`);
+    }
+    if (queueKeys.has(item.chaveFila)) throw new Error(`Chave de fila repetida: ${item.chaveFila}`);
+    queueKeys.add(item.chaveFila);
+  }
+
+  return {
+    metadata: payload.metadata || {},
+    patients,
+    queue,
+    closed: Array.isArray(payload.registrosEncerradosNaoImportarNaFila)
+      ? payload.registrosEncerradosNaoImportarNaFila
+      : [],
+    duplicates: Array.isArray(payload.possiveisDuplicidades) ? payload.possiveisDuplicidades : []
+  };
+}
+
+function migrationSafeId(value, prefix) {
+  const clean = String(value || "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
+  if (!clean) throw new Error(`Identificador inválido em ${prefix}.`);
+  return clean;
+}
+
+function migrationDate(value) {
+  if (!value) return null;
+  const parsed = new Date(`${value}T12:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function migrationText(value, fallback = "") {
+  const text = String(value ?? "").trim();
+  return text || fallback;
+}
+
+function migrationPatientQueueMap(queue) {
+  const map = new Map();
+  queue.forEach(item => {
+    const current = map.get(item.chavePaciente) || [];
+    current.push(item);
+    map.set(item.chavePaciente, current);
+  });
+  for (const items of map.values()) {
+    items.sort((a, b) => String(a.dataEntrada || "9999-99-99").localeCompare(String(b.dataEntrada || "9999-99-99")));
+  }
+  return map;
+}
+
+function migrationPatientDocument(patient, queueItems) {
+  const first = queueItems[0] || {};
+  const dates = queueItems.map(item => item.dataEntrada).filter(Boolean).sort();
+  const reasons = [...new Set([
+    patient.motivoRevisao,
+    ...queueItems.map(item => item.pendenciaNaoBloqueante || item.motivosRevisao)
+  ].filter(Boolean).flatMap(value => String(value).split("|").map(part => part.trim()).filter(Boolean)))];
+  const notes = [
+    "Cadastro criado pela migração das filas de espera de 2026.",
+    reasons.length ? `Pendências preservadas: ${reasons.join("; ")}.` : "Dados pessoais complementares ainda precisam ser conferidos."
+  ];
+
+  return {
+    nome: migrationText(patient.nome),
+    nomeBusca: normalize(patient.nomeBusca || patient.nome),
+    cpf: "",
+    dataNascimento: "",
+    telefone: onlyDigits(patient.telefonePrincipal || patient.telefones?.[0] || ""),
+    telefoneSecundario: onlyDigits(patient.telefoneSecundario || patient.telefones?.[1] || ""),
+    telefones: Array.isArray(patient.telefones) ? patient.telefones : [],
+    dataEncaminhamento: dates[0] || "",
+    especialidade: migrationText(first.especialidade, patient.especialidadesOrigem?.[0] || "Não informado"),
+    especialidades: Array.isArray(patient.especialidadesOrigem) ? patient.especialidadesOrigem : [],
+    tipoAtendimento: migrationText(first.tipoAtendimento, "Não informado"),
+    classificacao: migrationText(first.classificacao, "Não informado"),
+    modalidade: migrationText(first.modalidade, "Não informado"),
+    endereco: "",
+    observacoes: notes.join(" "),
+    status: "na_fila",
+    cadastroIncompleto: true,
+    pendenciasMigracao: reasons,
+    quantidadeEntradasFilaMigradas: queueItems.length,
+    origem: "migracao_filas_2026",
+    origemMigracao: patient.origemMigracao || "filas_espera_cran_2026",
+    migrationDatasetId: WAITING_LIST_MIGRATION_ID,
+    criadoEm: serverTimestamp(),
+    criadoPor: state.user.uid,
+    atualizadoEm: serverTimestamp(),
+    atualizadoPor: state.user.uid
+  };
+}
+
+function migrationQueueDocument(item) {
+  const notes = [
+    item.observacoes,
+    item.profissionalReferenciado ? `Profissional anotado na planilha: ${item.profissionalReferenciado}.` : "",
+    item.pendenciaNaoBloqueante || item.motivosRevisao
+      ? `Pendências da migração: ${item.pendenciaNaoBloqueante || item.motivosRevisao}.`
+      : "",
+    `Origem: ${item.arquivoOrigem || "planilha"}${item.linhaOrigem ? `, linha ${item.linhaOrigem}` : ""}.`
+  ].filter(Boolean).join(" ");
+
+  return {
+    pacienteId: migrationSafeId(item.chavePaciente, "paciente"),
+    pacienteNome: migrationText(item.nomePaciente),
+    pacienteNomeBusca: normalize(item.nomeBusca || item.nomePaciente),
+    pacienteCpf: "",
+    telefone: onlyDigits(item.telefonePrincipal || item.telefones?.[0] || ""),
+    telefoneSecundario: onlyDigits(item.telefoneSecundario || item.telefones?.[1] || ""),
+    telefones: Array.isArray(item.telefones) ? item.telefones : [],
+    especialidade: migrationText(item.especialidade, "Não informado"),
+    tipoAtendimento: migrationText(item.tipoAtendimento, "Não informado"),
+    classificacao: migrationText(item.classificacao, "Não informado"),
+    modalidade: migrationText(item.modalidade, "Não informado"),
+    observacoes: notes,
+    status: "aguardando",
+    dataEntrada: migrationDate(item.dataEntrada),
+    dataEntradaOriginal: migrationText(item.dataOriginal),
+    numeroListaOriginal: item.numeroListaOriginal ?? "",
+    cadastroIncompleto: Boolean(item.cadastroIncompleto || item.requerRevisao),
+    pendenciasMigracao: migrationText(item.pendenciaNaoBloqueante || item.motivosRevisao),
+    duplicadoSinalizado: Boolean(item.duplicadoExato || item.grupoPossivelDuplicidade),
+    grupoPossivelDuplicidade: migrationText(item.grupoPossivelDuplicidade),
+    profissionalReferenciado: migrationText(item.profissionalReferenciado),
+    arquivoOrigem: migrationText(item.arquivoOrigem),
+    linhaOrigem: item.linhaOrigem ?? null,
+    origem: "migracao_filas_2026",
+    migrationDatasetId: WAITING_LIST_MIGRATION_ID,
+    criadoEm: serverTimestamp(),
+    criadoPor: state.user.uid,
+    atualizadoEm: serverTimestamp(),
+    atualizadoPor: state.user.uid
+  };
+}
+
+async function renderMigration() {
+  if (!isAdmin()) {
+    el.pageContent.innerHTML = emptyHTML("Acesso restrito", "Somente o administrador pode executar migrações.");
+    return;
+  }
+
+  const markerRef = doc(db, "configuracoes", `migracao_${WAITING_LIST_MIGRATION_ID}`);
+  const markerSnap = await getDoc(markerRef);
+  const marker = markerSnap.exists() ? markerSnap.data() : null;
+  const completed = marker?.concluida === true;
+  const inProgress = marker && !completed;
+
+  el.pageContent.innerHTML = `
+    <div class="migration-hero">
+      <div>
+        <span class="eyebrow">Ferramenta administrativa</span>
+        <h2>Migração das filas de espera de 2026</h2>
+        <p>Importe o JSON privado preparado a partir das seis planilhas. O arquivo é lido no navegador e somente os dados confirmados são enviados ao Firestore.</p>
+      </div>
+      <div class="migration-status ${completed ? "done" : inProgress ? "warning" : "ready"}">
+        <span>${completed ? "✓" : inProgress ? "!" : "↓"}</span>
+        <div><strong>${completed ? "Migração concluída" : inProgress ? "Migração interrompida" : "Pronto para importar"}</strong>
+        <small>${completed ? `${Number(marker.filasImportadas || 0).toLocaleString("pt-BR")} filas e ${Number(marker.pacientesImportados || 0).toLocaleString("pt-BR")} pacientes registrados.` : inProgress ? "Selecione o mesmo arquivo para retomar com segurança." : "Nenhum pacote de filas foi importado ainda."}</small></div>
+      </div>
+    </div>
+
+    <div class="metric-grid migration-metrics">
+      ${metricCard("Leituras de controle", completed || inProgress ? "1" : "0", "A ferramenta usa um único marcador", "queue", "teal")}
+      ${metricCard("Proteção", "IDs fixos", "Evita duplicidade em interrupções", "archive", "blue")}
+      ${metricCard("Lotes", "Até 400", "Abaixo do limite do Firestore", "users", "violet")}
+      ${metricCard("Acesso", "Administrador", "Recepção e profissionais não visualizam", "alert", "amber")}
+    </div>
+
+    <div class="migration-grid">
+      <section class="panel migration-panel">
+        <div class="panel-heading"><div><span class="eyebrow">Como funciona</span><h3>Importação em duas etapas</h3></div></div>
+        <div class="migration-steps">
+          <div><b>1</b><span><strong>Pacientes</strong><small>Cria 1 cadastro por pessoa, marcado como incompleto para conferência futura.</small></span></div>
+          <div><b>2</b><span><strong>Fila de espera</strong><small>Cria todas as entradas ainda aguardando, inclusive as que possuem pendências.</small></span></div>
+          <div><b>3</b><span><strong>Conclusão</strong><small>Grava um marcador que bloqueia uma nova importação acidental.</small></span></div>
+        </div>
+      </section>
+      <section class="panel migration-panel">
+        <div class="panel-heading"><div><span class="eyebrow">Cuidados</span><h3>Antes de iniciar</h3></div></div>
+        <ul class="migration-checklist">
+          <li>Use somente o arquivo <strong>fila-espera-cran-2026-importar-todos-aguardando.json</strong>.</li>
+          <li>Não coloque o JSON no GitHub, no Hosting ou dentro da pasta pública.</li>
+          <li>Mantenha esta página aberta até a barra chegar a 100%.</li>
+          <li>Os 43 desistentes ou encaminhados externamente não entram na fila ativa.</li>
+        </ul>
+      </section>
+    </div>
+
+    <div class="migration-action-panel panel">
+      <div><strong>${completed ? "A importação já foi finalizada" : inProgress ? "Retome a importação" : "Selecione o pacote privado"}</strong>
+      <p>${completed ? `Concluída em ${escapeHTML(formatTimestamp(marker.concluidaEm))} por ${escapeHTML(marker.concluidaPorNome || "administrador")}.` : "A ferramenta mostrará uma prévia completa antes de gravar qualquer documento."}</p></div>
+      ${completed
+        ? `<button class="secondary-button" type="button" data-go="queue">Abrir fila de espera</button>`
+        : `<button class="primary-button" type="button" data-action="import-waiting-lists">${inProgress ? "Retomar importação" : "Selecionar JSON e importar"}</button>`}
+    </div>`;
+}
+
+async function openWaitingListImportDialog() {
+  if (!isAdmin()) throw new Error("Somente o administrador pode importar as filas de espera.");
+  let selectedPayload = null;
+
+  openDialog({
+    title: "Importar filas de espera",
+    description: "Pacientes e entradas aguardando serão gravados no mesmo Firebase do Sistema CRAN.",
+    submitLabel: "Iniciar migração",
+    body: `<div class="archive-import-layout migration-import-layout">
+      <div class="archive-import-warning">
+        <strong>Dados pessoais e de saúde</strong>
+        <p>O JSON é confidencial. Ele será lido localmente e não ficará armazenado nos arquivos públicos do sistema.</p>
+      </div>
+      <label class="file-drop-field">
+        <span>Arquivo tratado das filas (.json)</span>
+        <input id="waiting-list-import-file" name="waitingListImportFile" type="file" accept="application/json,.json" required>
+        <small>Arquivo esperado: fila-espera-cran-2026-importar-todos-aguardando.json</small>
+      </label>
+      <div id="waiting-list-import-preview" class="archive-import-preview muted-box">Selecione o JSON para conferir os números antes de importar.</div>
+      <label class="migration-confirmation hidden" id="waiting-list-confirmation-wrap">
+        <input id="waiting-list-confirmation" name="confirmMigration" type="checkbox" value="yes">
+        <span>Confirmo que desejo criar os pacientes e colocá-los na fila de espera do Firebase real.</span>
+      </label>
+      <div id="waiting-list-import-progress" class="archive-import-progress hidden">
+        <div><strong id="waiting-list-progress-label">Preparando...</strong><span id="waiting-list-progress-value">0%</span></div>
+        <progress id="waiting-list-progress-bar" value="0" max="100"></progress>
+        <small id="waiting-list-progress-detail">Não feche esta janela durante a importação.</small>
+      </div>
+    </div>`,
+    afterOpen: () => {
+      const input = document.querySelector("#waiting-list-import-file");
+      const preview = document.querySelector("#waiting-list-import-preview");
+      const confirmation = document.querySelector("#waiting-list-confirmation-wrap");
+      input.addEventListener("change", async () => {
+        selectedPayload = null;
+        confirmation.classList.add("hidden");
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+          const parsed = validateWaitingListMigrationPayload(JSON.parse(await file.text()));
+          selectedPayload = parsed;
+          const specialties = migrationSpecialtySummary(parsed.queue);
+          const incomplete = parsed.queue.filter(item => item.cadastroIncompleto || item.requerRevisao).length;
+          preview.className = "archive-import-preview migration-preview";
+          preview.innerHTML = `<div class="migration-preview-numbers">
+              <span><strong>${parsed.patients.length.toLocaleString("pt-BR")}</strong><small>pacientes</small></span>
+              <span><strong>${parsed.queue.length.toLocaleString("pt-BR")}</strong><small>entradas na fila</small></span>
+              <span><strong>${incomplete.toLocaleString("pt-BR")}</strong><small>com pendências</small></span>
+              <span><strong>${parsed.closed.length.toLocaleString("pt-BR")}</strong><small>fora da fila</small></span>
+            </div>
+            <div class="migration-specialty-preview">${specialties.map(([name, total]) => `<span>${escapeHTML(name)} <b>${total.toLocaleString("pt-BR")}</b></span>`).join("")}</div>
+            <small>Os registros com pendências também serão importados e ficarão sinalizados como cadastro incompleto.</small>`;
+          confirmation.classList.remove("hidden");
+        } catch (error) {
+          preview.className = "archive-import-preview error-box";
+          preview.textContent = error.message;
+        }
+      });
+    },
+    onSubmit: async formData => {
+      const file = formData.get("waitingListImportFile");
+      if (!selectedPayload && file instanceof File) {
+        selectedPayload = validateWaitingListMigrationPayload(JSON.parse(await file.text()));
+      }
+      if (!selectedPayload) throw new Error("Selecione o arquivo JSON preparado para as filas.");
+      if (formValue(formData, "confirmMigration") !== "yes") {
+        throw new Error("Marque a confirmação antes de iniciar a migração.");
+      }
+
+      const closeButton = document.querySelector("#dialog-close");
+      const cancelButton = document.querySelector("#dialog-cancel");
+      if (closeButton) closeButton.disabled = true;
+      if (cancelButton) cancelButton.disabled = true;
+
+      try {
+      const progress = document.querySelector("#waiting-list-import-progress");
+      const progressBar = document.querySelector("#waiting-list-progress-bar");
+      const progressLabel = document.querySelector("#waiting-list-progress-label");
+      const progressValue = document.querySelector("#waiting-list-progress-value");
+      const progressDetail = document.querySelector("#waiting-list-progress-detail");
+      progress.classList.remove("hidden");
+
+      const markerRef = doc(db, "configuracoes", `migracao_${WAITING_LIST_MIGRATION_ID}`);
+      progressLabel.textContent = "Verificando a migração...";
+      const markerSnap = await getDoc(markerRef);
+      const marker = markerSnap.exists() ? markerSnap.data() : null;
+      if (marker?.concluida === true) {
+        progressBar.value = 100;
+        progressValue.textContent = "100%";
+        progressLabel.textContent = "Migração já concluída";
+        progressDetail.textContent = "O marcador impediu uma segunda importação e nenhuma duplicidade foi criada.";
+        toast("As filas de espera já foram importadas.");
+        return;
+      }
+
+      const queueByPatient = migrationPatientQueueMap(selectedPayload.queue);
+      const totalWrites = selectedPayload.patients.length + selectedPayload.queue.length;
+      let completedWrites = 0;
+      const batchSize = 400;
+
+      await setDoc(markerRef, {
+        datasetId: WAITING_LIST_MIGRATION_ID,
+        status: "em_andamento",
+        concluida: false,
+        totalPacientes: selectedPayload.patients.length,
+        totalFilas: selectedPayload.queue.length,
+        iniciadoEm: marker?.iniciadoEm || serverTimestamp(),
+        iniciadoPor: marker?.iniciadoPor || state.user.uid,
+        iniciadoPorNome: marker?.iniciadoPorNome || state.profile.nome || state.user.email,
+        atualizadoEm: serverTimestamp()
+      }, { merge: true });
+
+      const updateProgress = (label, detail) => {
+        const percent = Math.round((completedWrites / totalWrites) * 100);
+        progressBar.value = percent;
+        progressValue.textContent = `${percent}%`;
+        progressLabel.textContent = label;
+        progressDetail.textContent = detail;
+      };
+
+      for (let offset = 0; offset < selectedPayload.patients.length; offset += batchSize) {
+        const chunk = selectedPayload.patients.slice(offset, offset + batchSize);
+        const batch = writeBatch(db);
+        chunk.forEach(patient => {
+          const patientId = migrationSafeId(patient.chavePaciente, "paciente");
+          const queueItems = queueByPatient.get(patient.chavePaciente) || [];
+          batch.set(doc(db, "pacientes", patientId), migrationPatientDocument(patient, queueItems), { merge: true });
+        });
+        await batch.commit();
+        completedWrites += chunk.length;
+        await setDoc(markerRef, {
+          status: "em_andamento",
+          etapa: "pacientes",
+          pacientesImportados: Math.min(offset + chunk.length, selectedPayload.patients.length),
+          atualizadoEm: serverTimestamp()
+        }, { merge: true });
+        updateProgress(
+          `Criando pacientes: ${Math.min(offset + chunk.length, selectedPayload.patients.length).toLocaleString("pt-BR")} de ${selectedPayload.patients.length.toLocaleString("pt-BR")}`,
+          `Lote ${Math.floor(offset / batchSize) + 1} de ${Math.ceil(selectedPayload.patients.length / batchSize)} da etapa de pacientes.`
+        );
+      }
+
+      for (let offset = 0; offset < selectedPayload.queue.length; offset += batchSize) {
+        const chunk = selectedPayload.queue.slice(offset, offset + batchSize);
+        const batch = writeBatch(db);
+        chunk.forEach(item => {
+          const queueId = migrationSafeId(item.chaveFila, "fila");
+          batch.set(doc(db, "filaEspera", queueId), migrationQueueDocument(item), { merge: true });
+        });
+        await batch.commit();
+        completedWrites += chunk.length;
+        await setDoc(markerRef, {
+          status: "em_andamento",
+          etapa: "filaEspera",
+          filasImportadas: Math.min(offset + chunk.length, selectedPayload.queue.length),
+          atualizadoEm: serverTimestamp()
+        }, { merge: true });
+        updateProgress(
+          `Criando fila: ${Math.min(offset + chunk.length, selectedPayload.queue.length).toLocaleString("pt-BR")} de ${selectedPayload.queue.length.toLocaleString("pt-BR")}`,
+          `Lote ${Math.floor(offset / batchSize) + 1} de ${Math.ceil(selectedPayload.queue.length / batchSize)} da etapa de fila.`
+        );
+      }
+
+      await setDoc(markerRef, {
+        datasetId: WAITING_LIST_MIGRATION_ID,
+        status: "concluida",
+        concluida: true,
+        pacientesImportados: selectedPayload.patients.length,
+        filasImportadas: selectedPayload.queue.length,
+        registrosForaDaFila: selectedPayload.closed.length,
+        registrosComPendencias: selectedPayload.queue.filter(item => item.cadastroIncompleto || item.requerRevisao).length,
+        concluidaEm: serverTimestamp(),
+        concluidaPor: state.user.uid,
+        concluidaPorNome: state.profile.nome || state.user.email,
+        atualizadoEm: serverTimestamp()
+      }, { merge: true });
+
+      await logAction("importar_filas_espera_2026", "filaEspera", WAITING_LIST_MIGRATION_ID, {
+        pacientesImportados: selectedPayload.patients.length,
+        filasImportadas: selectedPayload.queue.length,
+        registrosForaDaFila: selectedPayload.closed.length
+      });
+      invalidateDataCache("pacientes:", "filaEspera:", "reports-queue:");
+      state.caches = {};
+      completedWrites = totalWrites;
+      updateProgress("Migração concluída", `${selectedPayload.queue.length.toLocaleString("pt-BR")} entradas foram colocadas na fila e ${selectedPayload.patients.length.toLocaleString("pt-BR")} pacientes foram criados.`);
+      toast("Filas de espera importadas com sucesso.");
+      await renderMigration();
+      } catch (error) {
+        if (closeButton) closeButton.disabled = false;
+        if (cancelButton) cancelButton.disabled = false;
+        throw error;
+      }
+    }
+  });
+}
+
 function findCached(collectionName, id) {
   return (state.caches[collectionName] || []).find(item => item.id === id);
 }
@@ -3250,6 +3850,7 @@ el.pageContent.addEventListener("click", async event => {
     if (action === "restore-patient") return await restorePatient(findCached("archive", id));
     if (action === "manual-archive") return await openManualArchiveDialog();
     if (action === "import-archive") return await openArchiveImportDialog();
+    if (action === "import-waiting-lists") return await openWaitingListImportDialog();
     if (action === "export-archive") return exportArchiveCSV();
   } catch (error) {
     console.error(error);
@@ -3375,7 +3976,7 @@ el.installButton.addEventListener("click", async () => {
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   try {
-    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.8.0");
+    state.registration = await navigator.serviceWorker.register("/sw.js?v=1.9.0");
     if (state.registration.waiting) el.updateBanner.classList.remove("hidden");
     state.registration.addEventListener("updatefound", () => {
       const worker = state.registration.installing;

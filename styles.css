@@ -844,3 +844,64 @@ td strong { color: var(--text-strong); }
 }
 
 .optimization-note{margin:0 0 16px;padding:11px 14px;border:1px solid var(--line,#dce8e5);border-radius:12px;background:#f4faf8;color:#47625f;font-size:.9rem}.optimization-note strong{color:#17685f}
+
+
+/* Migração das filas de espera — v1.9.0 */
+.migration-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+  gap: 22px;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 26px;
+  border: 1px solid rgba(18, 63, 74, .1);
+  border-radius: 22px;
+  background: linear-gradient(135deg, #f7fbfa 0%, #eaf5f3 100%);
+}
+.migration-hero h2 { margin: 5px 0 8px; color: var(--text-strong); font-size: clamp(1.4rem, 2vw, 2rem); }
+.migration-hero p { max-width: 760px; margin: 0; color: var(--muted); line-height: 1.6; }
+.migration-status { display: flex; align-items: center; gap: 13px; padding: 16px; border-radius: 16px; border: 1px solid transparent; }
+.migration-status > span { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; font-size: 1.15rem; font-weight: 900; }
+.migration-status strong, .migration-status small { display: block; }
+.migration-status small { margin-top: 4px; line-height: 1.35; }
+.migration-status.ready { background: #e8f6f4; border-color: #b9ded8; color: #175b5e; }
+.migration-status.ready > span { background: #ccebe5; }
+.migration-status.warning { background: #fff7e6; border-color: #f2d39a; color: #75500f; }
+.migration-status.warning > span { background: #ffe9b8; }
+.migration-status.done { background: #eaf7ed; border-color: #b9dfc2; color: #1e6635; }
+.migration-status.done > span { background: #ccebd4; }
+.migration-metrics { margin-bottom: 20px; }
+.migration-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 18px; }
+.migration-panel { padding: 20px; }
+.migration-steps { display: grid; gap: 12px; }
+.migration-steps > div { display: grid; grid-template-columns: 38px 1fr; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-soft); }
+.migration-steps b { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: #dcefed; color: #176268; }
+.migration-steps strong, .migration-steps small { display: block; }
+.migration-steps small { margin-top: 3px; color: var(--muted); line-height: 1.4; }
+.migration-checklist { display: grid; gap: 11px; margin: 0; padding-left: 21px; color: var(--text); }
+.migration-checklist li { padding-left: 4px; line-height: 1.5; }
+.migration-action-panel { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 22px; }
+.migration-action-panel strong { color: var(--text-strong); font-size: 1.05rem; }
+.migration-action-panel p { margin: 5px 0 0; color: var(--muted); }
+.migration-import-layout { min-width: min(720px, 82vw); }
+.migration-confirmation { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border: 1px solid #e8c36f; border-radius: 14px; background: #fff9e9; color: #684b0d; font-weight: 700; line-height: 1.45; }
+.migration-confirmation input { margin-top: 3px; width: 18px; height: 18px; flex: 0 0 auto; }
+.migration-preview { gap: 13px; }
+.migration-preview-numbers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.migration-preview-numbers span { display: grid; padding: 11px; border: 1px solid rgba(18, 101, 109, .13); border-radius: 12px; background: rgba(255,255,255,.6); }
+.migration-preview-numbers strong { font-size: 1.15rem; }
+.migration-preview-numbers small { margin-top: 3px; color: #557477; }
+.migration-specialty-preview { display: flex; flex-wrap: wrap; gap: 7px; }
+.migration-specialty-preview span { padding: 6px 9px; border-radius: 999px; background: #d9edeb; color: #185d62; font-size: .78rem; }
+.migration-specialty-preview b { margin-left: 4px; }
+
+@media (max-width: 900px) {
+  .migration-hero, .migration-grid { grid-template-columns: 1fr; }
+  .migration-action-panel { align-items: stretch; flex-direction: column; }
+  .migration-action-panel button { width: 100%; }
+}
+@media (max-width: 640px) {
+  .migration-hero { padding: 18px; }
+  .migration-preview-numbers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .migration-import-layout { min-width: 0; }
+}

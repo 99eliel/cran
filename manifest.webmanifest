@@ -1,7 +1,7 @@
 {
   "name": "Sistema CRAN",
   "short_name": "CRAN",
-  "description": "Gestão de pacientes, fila de espera, agenda e atendimentos do CRAN.",
+  "description": "Gestão de pacientes, filas de espera, agenda, atendimentos e migração controlada de dados do CRAN.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
